@@ -1,10 +1,13 @@
 import type {
   BillingInterval,
   InvoiceStatus,
+  Prisma,
   ProviderEvent,
   SubscriptionStatus,
 } from "@prisma/client";
 import type Stripe from "stripe";
+
+import { prisma } from "@/lib/prisma";
 
 import type {
   CanonicalCustomerInput,
@@ -19,10 +22,7 @@ import { PaymentProvider } from "../types";
 
 /**
  * Stripe implementation of {@link PaymentProviderService}.
- *
- * Stripe-specific SDK usage stays in `lib/providers/stripe/*`.
- * Mapping logic is stubbed with comments describing the intended
- * field-level normalization into our canonical models.
+ * All Stripe SDK usage and payload mapping stay in `lib/providers/stripe/*`.
  */
 export class StripeProviderService implements PaymentProviderService {
   readonly provider = PaymentProvider.Stripe;
@@ -32,222 +32,813 @@ export class StripeProviderService implements PaymentProviderService {
     private readonly integration: ProviderIntegrationRef,
   ) {}
 
-  /**
-   * List Stripe customers for this account and upsert canonical `Customer` rows.
-   *
-   * Planned flow:
-   * 1. `stripe.customers.list({ limit })` (paginate via `starting_after`)
-   * 2. `normalizeCustomer(stripeCustomer)` → {@link CanonicalCustomerInput}
-   * 3. Upsert on `(workspaceId, providerCustomerId)`
-   */
   async syncCustomers(workspaceId: string): Promise<SyncResult> {
-    void this.stripe;
-    void this.integration;
-    // TODO: implement Stripe customer pagination + Prisma upsert
-    return emptySyncResult(workspaceId, this.provider);
+    const result = emptySyncResult(workspaceId, this.provider);
+
+    for await (const stripeCustomer of this.stripe.customers.list({
+      limit: 100,
+    })) {
+      if (stripeCustomer.deleted) {
+        result.skipped += 1;
+        continue;
+      }
+
+      try {
+        const input = this.normalizeCustomer(workspaceId, stripeCustomer);
+        const outcome = await this.upsertCustomer(input);
+        result.synced += 1;
+        if (outcome.outcome === "created") result.created += 1;
+        else result.updated += 1;
+      } catch (error) {
+        result.errors.push({
+          providerObjectId: stripeCustomer.id,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return result;
   }
 
-  /**
-   * List Stripe subscriptions and upsert canonical `Subscription` rows.
-   *
-   * Planned flow:
-   * 1. `stripe.subscriptions.list({ status: 'all', expand: ['data.items.data.price'] })`
-   * 2. Resolve local `customerId` from `subscription.customer`
-   * 3. `normalizeSubscription(stripeSubscription, customerId)` → {@link CanonicalSubscriptionInput}
-   * 4. Upsert on `(workspaceId, providerSubscriptionId)`
-   */
   async syncSubscriptions(workspaceId: string): Promise<SyncResult> {
-    void this.stripe;
-    void this.integration;
-    // TODO: implement Stripe subscription pagination + Prisma upsert
-    return emptySyncResult(workspaceId, this.provider);
+    const result = emptySyncResult(workspaceId, this.provider);
+
+    for await (const stripeSubscription of this.stripe.subscriptions.list({
+      status: "all",
+      limit: 100,
+      expand: ["data.items.data.price"],
+    })) {
+      try {
+        const providerCustomerId = asStripeId(stripeSubscription.customer);
+        if (!providerCustomerId) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const customer = await this.ensureCustomerByProviderId(
+          workspaceId,
+          providerCustomerId,
+        );
+        if (!customer) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const input = this.normalizeSubscription(
+          workspaceId,
+          customer.id,
+          stripeSubscription,
+        );
+        const outcome = await this.upsertSubscription(input);
+        result.synced += 1;
+        if (outcome.outcome === "created") result.created += 1;
+        else result.updated += 1;
+      } catch (error) {
+        result.errors.push({
+          providerObjectId: stripeSubscription.id,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return result;
   }
 
-  /**
-   * List Stripe invoices and upsert canonical `Invoice` rows.
-   *
-   * Planned flow:
-   * 1. `stripe.invoices.list({ expand: ['data.subscription'] })`
-   * 2. Resolve local `customerId` / optional `subscriptionId`
-   * 3. `normalizeInvoice(stripeInvoice, customerId, subscriptionId)` → {@link CanonicalInvoiceInput}
-   * 4. Upsert on `(workspaceId, providerInvoiceId)`
-   */
   async syncInvoices(workspaceId: string): Promise<SyncResult> {
-    void this.stripe;
-    void this.integration;
-    // TODO: implement Stripe invoice pagination + Prisma upsert
-    return emptySyncResult(workspaceId, this.provider);
+    const result = emptySyncResult(workspaceId, this.provider);
+
+    for await (const stripeInvoice of this.stripe.invoices.list({
+      limit: 100,
+    })) {
+      try {
+        if (!stripeInvoice.id) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const providerCustomerId = asStripeId(stripeInvoice.customer);
+        if (!providerCustomerId) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const customer = await this.ensureCustomerByProviderId(
+          workspaceId,
+          providerCustomerId,
+        );
+        if (!customer) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const localSubscriptionId = await this.resolveLocalSubscriptionId(
+          workspaceId,
+          getInvoiceSubscriptionId(stripeInvoice),
+        );
+
+        const input = this.normalizeInvoice(
+          workspaceId,
+          customer.id,
+          localSubscriptionId,
+          stripeInvoice,
+        );
+        const outcome = await this.upsertInvoice(input);
+        result.synced += 1;
+        if (outcome.outcome === "created") result.created += 1;
+        else result.updated += 1;
+      } catch (error) {
+        result.errors.push({
+          providerObjectId: stripeInvoice.id ?? "unknown",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return result;
   }
 
   /**
-   * Dispatch a stored Stripe webhook event into the appropriate upsert path.
-   *
-   * Planned event types:
-   * - `customer.*` → normalize + upsert Customer
-   * - `customer.subscription.*` → normalize + upsert Subscription
-   * - `invoice.*` → normalize + upsert Invoice
-   * - `invoice.payment_failed` → also create/update PaymentFailure / RecoveryCase later
+   * Process a stored Stripe `ProviderEvent` and apply canonical upserts /
+   * recovery side effects. Stripe object IDs are the only foreign keys we store.
    */
   async handleEvent(
     workspaceId: string,
     event: ProviderEvent,
   ): Promise<HandleEventResult> {
-    void this.stripe;
-    void this.integration;
-    // TODO: switch on event.eventType and apply normalize* + upsert
-    return {
+    const stripeEvent = parseStripeEventPayload(event);
+    return this.handleStripeEvent(workspaceId, stripeEvent, event.id);
+  }
+
+  /**
+   * Switch on Stripe `event.type` and map into RenewFlow records.
+   */
+  async handleStripeEvent(
+    workspaceId: string,
+    stripeEvent: Stripe.Event,
+    providerEventId?: string,
+  ): Promise<HandleEventResult> {
+    const base: HandleEventResult = {
       workspaceId,
       provider: this.provider,
-      providerEventId: event.providerEventId,
-      eventType: event.eventType,
+      providerEventId: stripeEvent.id,
+      eventType: stripeEvent.type,
       handled: false,
-      action: "not_implemented",
+    };
+
+    switch (stripeEvent.type) {
+      case "customer.created":
+      case "customer.updated": {
+        const customer = stripeEvent.data.object as Stripe.Customer;
+        const upserted = await this.upsertCustomer(
+          this.normalizeCustomer(workspaceId, customer),
+        );
+        return {
+          ...base,
+          handled: true,
+          action: "upserted_customer",
+          recordId: upserted.id,
+        };
+      }
+
+      case "customer.deleted": {
+        // Soft-ignore deletes for now; keep historical recovery data intact.
+        return { ...base, handled: true, action: "ignored_customer_deleted" };
+      }
+
+      case "customer.subscription.created":
+      case "customer.subscription.updated":
+      case "customer.subscription.deleted": {
+        const subscription = stripeEvent.data.object as Stripe.Subscription;
+        const providerCustomerId = asStripeId(subscription.customer);
+        if (!providerCustomerId) {
+          return { ...base, handled: false, action: "missing_customer" };
+        }
+
+        const customer = await this.ensureCustomerByProviderId(
+          workspaceId,
+          providerCustomerId,
+        );
+        if (!customer) {
+          return { ...base, handled: false, action: "customer_not_found" };
+        }
+
+        const upserted = await this.upsertSubscription(
+          this.normalizeSubscription(workspaceId, customer.id, subscription),
+        );
+        return {
+          ...base,
+          handled: true,
+          action: "upserted_subscription",
+          recordId: upserted.id,
+        };
+      }
+
+      case "invoice.created":
+      case "invoice.updated":
+      case "invoice.finalized":
+      case "invoice.paid":
+      case "invoice.payment_succeeded":
+      case "invoice.payment_failed": {
+        const invoice = stripeEvent.data.object as Stripe.Invoice;
+        const result = await this.handleInvoiceEvent(
+          workspaceId,
+          stripeEvent.type,
+          invoice,
+          providerEventId,
+        );
+        return { ...base, ...result };
+      }
+
+      default:
+        return { ...base, handled: true, action: "ignored_unhandled_type" };
+    }
+  }
+
+  // ─── Invoice / recovery handlers ───────────────────────────────────────────
+
+  private async handleInvoiceEvent(
+    workspaceId: string,
+    eventType: string,
+    stripeInvoice: Stripe.Invoice,
+    providerEventId?: string,
+  ): Promise<Pick<HandleEventResult, "handled" | "action" | "recordId">> {
+    const providerCustomerId = asStripeId(stripeInvoice.customer);
+    if (!providerCustomerId || !stripeInvoice.id) {
+      return { handled: false, action: "missing_invoice_refs" };
+    }
+
+    const customer = await this.ensureCustomerByProviderId(
+      workspaceId,
+      providerCustomerId,
+      {
+        email: stripeInvoice.customer_email,
+        name: stripeInvoice.customer_name,
+        currency: stripeInvoice.currency,
+      },
+    );
+    if (!customer) {
+      return { handled: false, action: "customer_not_found" };
+    }
+
+    const localSubscriptionId = await this.resolveLocalSubscriptionId(
+      workspaceId,
+      getInvoiceSubscriptionId(stripeInvoice),
+    );
+
+    const invoice = await this.upsertInvoice(
+      this.normalizeInvoice(
+        workspaceId,
+        customer.id,
+        localSubscriptionId,
+        stripeInvoice,
+      ),
+    );
+
+    if (eventType === "invoice.payment_failed") {
+      const failure = await this.createPaymentFailureAndRecoveryCase({
+        workspaceId,
+        customerId: customer.id,
+        subscriptionId: localSubscriptionId,
+        invoiceId: invoice.id,
+        providerEventId,
+        stripeInvoice,
+      });
+      return {
+        handled: true,
+        action: "created_payment_failure_and_recovery_case",
+        recordId: failure.recoveryCaseId,
+      };
+    }
+
+    if (
+      eventType === "invoice.paid" ||
+      eventType === "invoice.payment_succeeded"
+    ) {
+      await this.markInvoiceRecovered({
+        workspaceId,
+        invoiceId: invoice.id,
+        amountPaid: stripeAmountToDecimal(stripeInvoice.amount_paid ?? 0),
+      });
+      return {
+        handled: true,
+        action: "marked_failure_and_recovery_recovered",
+        recordId: invoice.id,
+      };
+    }
+
+    return {
+      handled: true,
+      action: "upserted_invoice",
+      recordId: invoice.id,
     };
   }
 
-  // ─── Normalizers (stubs) ───────────────────────────────────────────────────
+  private async createPaymentFailureAndRecoveryCase(args: {
+    workspaceId: string;
+    customerId: string;
+    subscriptionId: string | null;
+    invoiceId: string;
+    providerEventId?: string;
+    stripeInvoice: Stripe.Invoice;
+  }): Promise<{ paymentFailureId: string; recoveryCaseId: string }> {
+    const {
+      workspaceId,
+      customerId,
+      subscriptionId,
+      invoiceId,
+      providerEventId,
+      stripeInvoice,
+    } = args;
 
-  /**
-   * Map a Stripe Customer → canonical Customer input.
-   *
-   * Field mapping:
-   * - `providerCustomerId` ← `stripeCustomer.id`
-   * - `email`              ← `stripeCustomer.email` (required; skip/flag if missing)
-   * - `name`               ← `stripeCustomer.name`
-   * - `currency`           ← `stripeCustomer.currency` (fallback workspace/default ISO-4217)
-   * - `metadata`           ← `stripeCustomer.metadata`
-   * - `integrationId`      ← `this.integration.id`
-   * - `workspaceId`        ← method argument / integration.workspaceId
-   */
+    const existingOpenCase = await prisma.recoveryCase.findFirst({
+      where: {
+        workspaceId,
+        invoiceId,
+        status: { in: ["OPEN", "IN_PROGRESS"] },
+      },
+      orderBy: { openedAt: "desc" },
+    });
+
+    if (existingOpenCase?.paymentFailureId) {
+      return {
+        paymentFailureId: existingOpenCase.paymentFailureId,
+        recoveryCaseId: existingOpenCase.id,
+      };
+    }
+
+    const failureCode =
+      stripeInvoice.last_finalization_error?.code ??
+      stripeInvoice.last_finalization_error?.type ??
+      "payment_failed";
+    const failureMessage =
+      stripeInvoice.last_finalization_error?.message ??
+      "Stripe invoice payment failed";
+    const declineCode =
+      stripeInvoice.last_finalization_error?.decline_code ?? null;
+
+    const paymentFailure = await prisma.paymentFailure.create({
+      data: {
+        workspaceId,
+        customerId,
+        subscriptionId,
+        invoiceId,
+        providerEventId: providerEventId ?? null,
+        status: "OPEN",
+        failureCode,
+        failureMessage,
+        declineCode,
+        amount: stripeAmountToDecimal(stripeInvoice.amount_due ?? 0),
+        currency: (stripeInvoice.currency ?? "usd").toUpperCase(),
+        failedAt: new Date(),
+        metadata: {
+          stripeInvoiceId: stripeInvoice.id,
+          attemptCount: stripeInvoice.attempt_count,
+        } satisfies Prisma.InputJsonObject,
+      },
+    });
+
+    const recoveryCase = await prisma.recoveryCase.create({
+      data: {
+        workspaceId,
+        customerId,
+        subscriptionId,
+        invoiceId,
+        paymentFailureId: paymentFailure.id,
+        status: "OPEN",
+        openedAt: new Date(),
+        metadata: {
+          source: "stripe.invoice.payment_failed",
+          stripeInvoiceId: stripeInvoice.id,
+        } satisfies Prisma.InputJsonObject,
+      },
+    });
+
+    return {
+      paymentFailureId: paymentFailure.id,
+      recoveryCaseId: recoveryCase.id,
+    };
+  }
+
+  private async markInvoiceRecovered(args: {
+    workspaceId: string;
+    invoiceId: string;
+    amountPaid: string;
+  }): Promise<void> {
+    const { workspaceId, invoiceId, amountPaid } = args;
+    const now = new Date();
+
+    await prisma.paymentFailure.updateMany({
+      where: {
+        workspaceId,
+        invoiceId,
+        status: "OPEN",
+      },
+      data: {
+        status: "RECOVERED",
+        recoveredAt: now,
+      },
+    });
+
+    await prisma.recoveryCase.updateMany({
+      where: {
+        workspaceId,
+        invoiceId,
+        status: { in: ["OPEN", "IN_PROGRESS"] },
+      },
+      data: {
+        status: "RECOVERED",
+        closedAt: now,
+        recoveredAmount: amountPaid,
+      },
+    });
+  }
+
+  // ─── Normalizers ───────────────────────────────────────────────────────────
+
   normalizeCustomer(
     workspaceId: string,
     stripeCustomer: Stripe.Customer,
   ): CanonicalCustomerInput {
-    // TODO: implement mapping; amounts/currency should be uppercased ISO codes
     return {
       workspaceId,
       integrationId: this.integration.id,
       providerCustomerId: stripeCustomer.id,
-      email: stripeCustomer.email ?? "",
+      email: stripeCustomer.email ?? `${stripeCustomer.id}@unknown.customer`,
       name: stripeCustomer.name,
       currency: (stripeCustomer.currency ?? "usd").toUpperCase(),
       metadata: stripeCustomer.metadata,
     };
   }
 
-  /**
-   * Map a Stripe Subscription → canonical Subscription input.
-   *
-   * Field mapping:
-   * - `providerSubscriptionId` ← `sub.id`
-   * - `customerId`             ← resolved local Customer.id (from `sub.customer`)
-   * - `status`                 ← map Stripe status → Prisma `SubscriptionStatus`
-   *     (active, past_due, unpaid, canceled, incomplete, incomplete_expired,
-   *      trialing, paused)
-   * - `planName`               ← first item price nickname / product name / price.id
-   * - `interval`               ← `items.data[0].price.recurring.interval` → `BillingInterval`
-   * - `amount`                 ← unit_amount (cents) / 100 as decimal string
-   * - `currency`               ← price.currency (uppercased)
-   * - `currentPeriodStart`     ← `current_period_start` (unix → Date)
-   * - `currentPeriodEnd`       ← `current_period_end` (unix → Date)
-   * - `cancelAtPeriodEnd`      ← `cancel_at_period_end`
-   * - `canceledAt`             ← `canceled_at` (unix → Date | null)
-   * - `trialStart` / `trialEnd`← trial unix timestamps
-   * - `metadata`               ← `sub.metadata`
-   */
   normalizeSubscription(
     workspaceId: string,
     customerId: string,
     stripeSubscription: Stripe.Subscription,
   ): CanonicalSubscriptionInput {
-    // TODO: read primary subscription item + price; convert cents → major units
-    // Note: Stripe API 2024+ exposes period bounds on SubscriptionItem, not Subscription.
     const primaryItem = stripeSubscription.items.data[0];
-    const status = mapStripeSubscriptionStatus(stripeSubscription.status);
-    const interval = mapStripeBillingInterval(
-      primaryItem?.price?.recurring?.interval,
-    );
-    const periodStart = primaryItem?.current_period_start
-      ? new Date(primaryItem.current_period_start * 1000)
-      : new Date();
-    const periodEnd = primaryItem?.current_period_end
-      ? new Date(primaryItem.current_period_end * 1000)
-      : new Date();
+    const unitAmount = primaryItem?.price?.unit_amount ?? 0;
 
     return {
       workspaceId,
       customerId,
       providerSubscriptionId: stripeSubscription.id,
-      status,
-      planName: primaryItem?.price?.nickname ?? primaryItem?.price?.id ?? "unknown",
-      interval,
-      amount: "0",
+      status: mapStripeSubscriptionStatus(stripeSubscription.status),
+      planName:
+        primaryItem?.price?.nickname ?? primaryItem?.price?.id ?? "unknown",
+      interval: mapStripeBillingInterval(
+        primaryItem?.price?.recurring?.interval,
+      ),
+      amount: stripeAmountToDecimal(unitAmount),
       currency: (primaryItem?.price?.currency ?? "usd").toUpperCase(),
-      currentPeriodStart: periodStart,
-      currentPeriodEnd: periodEnd,
+      currentPeriodStart: primaryItem?.current_period_start
+        ? unixToDate(primaryItem.current_period_start)
+        : new Date(),
+      currentPeriodEnd: primaryItem?.current_period_end
+        ? unixToDate(primaryItem.current_period_end)
+        : new Date(),
       cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end,
-      canceledAt: stripeSubscription.canceled_at
-        ? new Date(stripeSubscription.canceled_at * 1000)
-        : null,
-      trialStart: stripeSubscription.trial_start
-        ? new Date(stripeSubscription.trial_start * 1000)
-        : null,
-      trialEnd: stripeSubscription.trial_end
-        ? new Date(stripeSubscription.trial_end * 1000)
-        : null,
+      canceledAt: unixToDateOrNull(stripeSubscription.canceled_at),
+      trialStart: unixToDateOrNull(stripeSubscription.trial_start),
+      trialEnd: unixToDateOrNull(stripeSubscription.trial_end),
       metadata: stripeSubscription.metadata,
     };
   }
 
-  /**
-   * Map a Stripe Invoice → canonical Invoice input.
-   *
-   * Field mapping:
-   * - `providerInvoiceId`    ← `invoice.id`
-   * - `customerId`           ← resolved local Customer.id (from `invoice.customer`)
-   * - `subscriptionId`       ← resolved local Subscription.id (from `invoice.subscription`)
-   * - `status`               ← map Stripe status → Prisma `InvoiceStatus`
-   *     (draft, open, paid, void, uncollectible)
-   * - `amountDue`            ← `amount_due` / 100
-   * - `amountPaid`           ← `amount_paid` / 100
-   * - `amountRemaining`      ← `amount_remaining` / 100
-   * - `currency`             ← `currency` (uppercased)
-   * - `attemptCount`         ← `attempt_count`
-   * - `nextPaymentAttemptAt` ← `next_payment_attempt` (unix → Date | null)
-   * - `paidAt`               ← `status_transitions.paid_at` (unix → Date | null)
-   * - `dueDate`              ← `due_date` (unix → Date | null)
-   * - `metadata`             ← `invoice.metadata`
-   */
   normalizeInvoice(
     workspaceId: string,
     customerId: string,
     subscriptionId: string | null,
     stripeInvoice: Stripe.Invoice,
   ): CanonicalInvoiceInput {
-    // TODO: convert Stripe minor units → major-unit decimal strings
     return {
       workspaceId,
       customerId,
       subscriptionId,
       providerInvoiceId: stripeInvoice.id ?? "",
       status: mapStripeInvoiceStatus(stripeInvoice.status),
-      amountDue: "0",
-      amountPaid: "0",
-      amountRemaining: "0",
+      amountDue: stripeAmountToDecimal(stripeInvoice.amount_due ?? 0),
+      amountPaid: stripeAmountToDecimal(stripeInvoice.amount_paid ?? 0),
+      amountRemaining: stripeAmountToDecimal(
+        stripeInvoice.amount_remaining ?? 0,
+      ),
       currency: (stripeInvoice.currency ?? "usd").toUpperCase(),
       attemptCount: stripeInvoice.attempt_count ?? 0,
-      nextPaymentAttemptAt: stripeInvoice.next_payment_attempt
-        ? new Date(stripeInvoice.next_payment_attempt * 1000)
-        : null,
-      paidAt: stripeInvoice.status_transitions?.paid_at
-        ? new Date(stripeInvoice.status_transitions.paid_at * 1000)
-        : null,
-      dueDate: stripeInvoice.due_date
-        ? new Date(stripeInvoice.due_date * 1000)
-        : null,
+      nextPaymentAttemptAt: unixToDateOrNull(stripeInvoice.next_payment_attempt),
+      paidAt: unixToDateOrNull(stripeInvoice.status_transitions?.paid_at),
+      dueDate: unixToDateOrNull(stripeInvoice.due_date),
       metadata: stripeInvoice.metadata,
     };
   }
+
+  // ─── Upserts ───────────────────────────────────────────────────────────────
+
+  private async upsertCustomer(
+    input: CanonicalCustomerInput,
+  ): Promise<{ id: string; outcome: "created" | "updated" }> {
+    const existing = await prisma.customer.findUnique({
+      where: {
+        workspaceId_providerCustomerId: {
+          workspaceId: input.workspaceId,
+          providerCustomerId: input.providerCustomerId,
+        },
+      },
+      select: { id: true },
+    });
+
+    const record = await prisma.customer.upsert({
+      where: {
+        workspaceId_providerCustomerId: {
+          workspaceId: input.workspaceId,
+          providerCustomerId: input.providerCustomerId,
+        },
+      },
+      create: {
+        workspaceId: input.workspaceId,
+        integrationId: input.integrationId,
+        providerCustomerId: input.providerCustomerId,
+        email: input.email,
+        name: input.name,
+        currency: input.currency,
+        metadata: toJson(input.metadata),
+      },
+      update: {
+        integrationId: input.integrationId,
+        email: input.email,
+        name: input.name,
+        currency: input.currency,
+        metadata: toJson(input.metadata),
+      },
+    });
+
+    return {
+      id: record.id,
+      outcome: existing ? "updated" : "created",
+    };
+  }
+
+  private async upsertSubscription(
+    input: CanonicalSubscriptionInput,
+  ): Promise<{ id: string; outcome: "created" | "updated" }> {
+    const existing = await prisma.subscription.findUnique({
+      where: {
+        workspaceId_providerSubscriptionId: {
+          workspaceId: input.workspaceId,
+          providerSubscriptionId: input.providerSubscriptionId,
+        },
+      },
+      select: { id: true },
+    });
+
+    const record = await prisma.subscription.upsert({
+      where: {
+        workspaceId_providerSubscriptionId: {
+          workspaceId: input.workspaceId,
+          providerSubscriptionId: input.providerSubscriptionId,
+        },
+      },
+      create: {
+        workspaceId: input.workspaceId,
+        customerId: input.customerId,
+        providerSubscriptionId: input.providerSubscriptionId,
+        status: input.status,
+        planName: input.planName,
+        interval: input.interval,
+        amount: input.amount,
+        currency: input.currency,
+        currentPeriodStart: input.currentPeriodStart,
+        currentPeriodEnd: input.currentPeriodEnd,
+        cancelAtPeriodEnd: input.cancelAtPeriodEnd ?? false,
+        canceledAt: input.canceledAt,
+        trialStart: input.trialStart,
+        trialEnd: input.trialEnd,
+        metadata: toJson(input.metadata),
+      },
+      update: {
+        customerId: input.customerId,
+        status: input.status,
+        planName: input.planName,
+        interval: input.interval,
+        amount: input.amount,
+        currency: input.currency,
+        currentPeriodStart: input.currentPeriodStart,
+        currentPeriodEnd: input.currentPeriodEnd,
+        cancelAtPeriodEnd: input.cancelAtPeriodEnd ?? false,
+        canceledAt: input.canceledAt,
+        trialStart: input.trialStart,
+        trialEnd: input.trialEnd,
+        metadata: toJson(input.metadata),
+      },
+    });
+
+    return {
+      id: record.id,
+      outcome: existing ? "updated" : "created",
+    };
+  }
+
+  private async upsertInvoice(
+    input: CanonicalInvoiceInput,
+  ): Promise<{ id: string; outcome: "created" | "updated" }> {
+    const existing = await prisma.invoice.findUnique({
+      where: {
+        workspaceId_providerInvoiceId: {
+          workspaceId: input.workspaceId,
+          providerInvoiceId: input.providerInvoiceId,
+        },
+      },
+      select: { id: true },
+    });
+
+    const record = await prisma.invoice.upsert({
+      where: {
+        workspaceId_providerInvoiceId: {
+          workspaceId: input.workspaceId,
+          providerInvoiceId: input.providerInvoiceId,
+        },
+      },
+      create: {
+        workspaceId: input.workspaceId,
+        customerId: input.customerId,
+        subscriptionId: input.subscriptionId,
+        providerInvoiceId: input.providerInvoiceId,
+        status: input.status,
+        amountDue: input.amountDue,
+        amountPaid: input.amountPaid,
+        amountRemaining: input.amountRemaining,
+        currency: input.currency,
+        attemptCount: input.attemptCount,
+        nextPaymentAttemptAt: input.nextPaymentAttemptAt,
+        paidAt: input.paidAt,
+        dueDate: input.dueDate,
+        metadata: toJson(input.metadata),
+      },
+      update: {
+        customerId: input.customerId,
+        subscriptionId: input.subscriptionId,
+        status: input.status,
+        amountDue: input.amountDue,
+        amountPaid: input.amountPaid,
+        amountRemaining: input.amountRemaining,
+        currency: input.currency,
+        attemptCount: input.attemptCount,
+        nextPaymentAttemptAt: input.nextPaymentAttemptAt,
+        paidAt: input.paidAt,
+        dueDate: input.dueDate,
+        metadata: toJson(input.metadata),
+      },
+    });
+
+    return {
+      id: record.id,
+      outcome: existing ? "updated" : "created",
+    };
+  }
+
+  private async ensureCustomerByProviderId(
+    workspaceId: string,
+    providerCustomerId: string,
+    hints?: {
+      email?: string | null;
+      name?: string | null;
+      currency?: string | null;
+    },
+  ) {
+    const existing = await prisma.customer.findUnique({
+      where: {
+        workspaceId_providerCustomerId: {
+          workspaceId,
+          providerCustomerId,
+        },
+      },
+    });
+    if (existing) {
+      return existing;
+    }
+
+    try {
+      const retrieved = await this.stripe.customers.retrieve(providerCustomerId);
+      if (retrieved.deleted) {
+        return null;
+      }
+      await this.upsertCustomer(this.normalizeCustomer(workspaceId, retrieved));
+    } catch {
+      if (!hints?.email && !hints?.currency) {
+        return null;
+      }
+      await this.upsertCustomer({
+        workspaceId,
+        integrationId: this.integration.id,
+        providerCustomerId,
+        email: hints.email ?? `${providerCustomerId}@unknown.customer`,
+        name: hints.name,
+        currency: (hints.currency ?? "usd").toUpperCase(),
+      });
+    }
+
+    return prisma.customer.findUnique({
+      where: {
+        workspaceId_providerCustomerId: {
+          workspaceId,
+          providerCustomerId,
+        },
+      },
+    });
+  }
+
+  private async resolveLocalSubscriptionId(
+    workspaceId: string,
+    providerSubscriptionId: string | null,
+  ): Promise<string | null> {
+    if (!providerSubscriptionId) {
+      return null;
+    }
+
+    const existing = await prisma.subscription.findUnique({
+      where: {
+        workspaceId_providerSubscriptionId: {
+          workspaceId,
+          providerSubscriptionId,
+        },
+      },
+      select: { id: true },
+    });
+    if (existing) {
+      return existing.id;
+    }
+
+    try {
+      const stripeSubscription =
+        await this.stripe.subscriptions.retrieve(providerSubscriptionId, {
+          expand: ["items.data.price"],
+        });
+      const providerCustomerId = asStripeId(stripeSubscription.customer);
+      if (!providerCustomerId) {
+        return null;
+      }
+      const customer = await this.ensureCustomerByProviderId(
+        workspaceId,
+        providerCustomerId,
+      );
+      if (!customer) {
+        return null;
+      }
+      const upserted = await this.upsertSubscription(
+        this.normalizeSubscription(
+          workspaceId,
+          customer.id,
+          stripeSubscription,
+        ),
+      );
+      return upserted.id;
+    } catch {
+      return null;
+    }
+  }
+}
+
+/**
+ * Entrypoint used by the webhook worker. Resolves the Stripe service for the
+ * workspace and dispatches {@link StripeProviderService.handleStripeEvent}.
+ */
+export async function handleStripeEvent(
+  workspaceId: string,
+  event: Stripe.Event | ProviderEvent,
+): Promise<HandleEventResult> {
+  const integration = await prisma.paymentProviderIntegration.findFirst({
+    where: {
+      workspaceId,
+      provider: "STRIPE",
+      status: { in: ["ACTIVE", "PENDING"] },
+    },
+    orderBy: { updatedAt: "desc" },
+  });
+
+  if (!integration) {
+    throw new Error(
+      `No Stripe PaymentProviderIntegration found for workspace ${workspaceId}`,
+    );
+  }
+
+  const { stripe } = await import("@/lib/stripe");
+  const service = new StripeProviderService(stripe, integration);
+
+  if (isProviderEvent(event)) {
+    return service.handleEvent(workspaceId, event);
+  }
+
+  return service.handleStripeEvent(workspaceId, event, undefined);
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function isProviderEvent(
+  event: Stripe.Event | ProviderEvent,
+): event is ProviderEvent {
+  return "providerEventId" in event && "payloadJson" in event;
+}
+
+function parseStripeEventPayload(event: ProviderEvent): Stripe.Event {
+  return event.payloadJson as unknown as Stripe.Event;
 }
 
 function emptySyncResult(
@@ -265,10 +856,39 @@ function emptySyncResult(
   };
 }
 
+function stripeAmountToDecimal(amountCents: number): string {
+  return (amountCents / 100).toFixed(4);
+}
+
+function unixToDate(seconds: number): Date {
+  return new Date(seconds * 1000);
+}
+
+function unixToDateOrNull(seconds: number | null | undefined): Date | null {
+  return typeof seconds === "number" ? unixToDate(seconds) : null;
+}
+
+function asStripeId(
+  value: string | { id: string } | null | undefined,
+): string | null {
+  if (!value) return null;
+  return typeof value === "string" ? value : value.id;
+}
+
+function getInvoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
+  return asStripeId(invoice.parent?.subscription_details?.subscription);
+}
+
+function toJson(
+  value: Record<string, unknown> | null | undefined,
+): Prisma.InputJsonValue | undefined {
+  if (value === undefined || value === null) return undefined;
+  return value as Prisma.InputJsonValue;
+}
+
 function mapStripeSubscriptionStatus(
   status: Stripe.Subscription.Status,
 ): SubscriptionStatus {
-  // Stripe → Prisma SubscriptionStatus (1:1 for the shared set)
   switch (status) {
     case "trialing":
       return "TRIALING";
