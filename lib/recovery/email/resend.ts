@@ -47,9 +47,14 @@ export class ResendEmailService implements EmailService {
 /**
  * Dev / fallback adapter that logs instead of sending.
  * Used when `RESEND_API_KEY` is unset so local recovery runs still work.
+ *
+ * TODO: implement Resend email sending here for local/dev when you want real
+ * delivery without committing a production key — or remove this fallback and
+ * require RESEND_API_KEY in all environments.
  */
 export class ConsoleEmailService implements EmailService {
   async send(input: SendEmailInput): Promise<SendEmailResult> {
+    // TODO: replace console logging with a real EmailService in production
     const providerMessageId = `console_${Date.now()}`;
     console.info("[email:console] send", {
       to: input.to,

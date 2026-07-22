@@ -10,4 +10,5 @@ export {
   StripeWebhookResolutionError,
   StripeWebhookVerificationError,
   verifyStripeWebhookEvent,
+  type IngestStripeWebhookResult,
 } from "./webhook";

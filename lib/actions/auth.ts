@@ -3,18 +3,23 @@
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 
-import { requireUser } from "@/lib/workspace";
 import { prisma } from "@/lib/prisma";
-import { WORKSPACE_COOKIE } from "@/lib/workspace";
 import { signUpUser } from "@/lib/signup";
+import {
+  formDataToObject,
+  signUpSchema,
+  switchWorkspaceSchema,
+  zodErrorMessage,
+} from "@/lib/validation";
+import { requireUser, WORKSPACE_COOKIE } from "@/lib/workspace";
 
 export async function registerAccount(formData: FormData) {
-  const name = String(formData.get("name") || "");
-  const email = String(formData.get("email") || "");
-  const password = String(formData.get("password") || "");
-  const workspaceName = String(formData.get("workspaceName") || "");
+  const parsed = signUpSchema.safeParse(formDataToObject(formData));
+  if (!parsed.success) {
+    return { ok: false as const, error: zodErrorMessage(parsed.error) };
+  }
 
-  const result = await signUpUser({ name, email, password, workspaceName });
+  const result = await signUpUser(parsed.data);
   if (!result.ok) {
     return result;
   }
@@ -30,11 +35,16 @@ export async function registerAccount(formData: FormData) {
 }
 
 export async function switchWorkspace(workspaceId: string) {
+  const parsed = switchWorkspaceSchema.safeParse({ workspaceId });
+  if (!parsed.success) {
+    return { ok: false as const, error: zodErrorMessage(parsed.error) };
+  }
+
   const user = await requireUser();
   const membership = await prisma.workspaceMember.findUnique({
     where: {
       workspaceId_userId: {
-        workspaceId,
+        workspaceId: parsed.data.workspaceId,
         userId: user.id,
       },
     },
@@ -45,7 +55,7 @@ export async function switchWorkspace(workspaceId: string) {
   }
 
   const cookieStore = cookies();
-  cookieStore.set(WORKSPACE_COOKIE, workspaceId, {
+  cookieStore.set(WORKSPACE_COOKIE, parsed.data.workspaceId, {
     httpOnly: true,
     sameSite: "lax",
     path: "/",

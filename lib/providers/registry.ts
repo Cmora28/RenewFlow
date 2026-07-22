@@ -59,12 +59,49 @@ export function getProviderService(
       return createStripeService(integration, deps.stripeClient);
 
     case PaymentProvider.Paddle:
+      // TODO: add Paddle provider service here — see lib/providers/paddle/
+      throw new Error(
+        `Provider "${provider}" is not implemented yet. ` +
+          `Add a service under lib/providers/paddle/ and register it here.`,
+      );
+
     case PaymentProvider.GoCardless:
+      // TODO: add GoCardless provider service here — see lib/providers/gocardless/
+      throw new Error(
+        `Provider "${provider}" is not implemented yet. ` +
+          `Add a service under lib/providers/gocardless/ and register it here.`,
+      );
+
     case PaymentProvider.Chargebee:
+      // TODO: implement Chargebee provider service under lib/providers/chargebee/
+      throw new Error(
+        `Provider "${provider}" is not implemented yet. ` +
+          `Add a service under lib/providers/${provider}/ and register it here.`,
+      );
+
     case PaymentProvider.Recurly:
+      // TODO: implement Recurly provider service under lib/providers/recurly/
+      throw new Error(
+        `Provider "${provider}" is not implemented yet. ` +
+          `Add a service under lib/providers/${provider}/ and register it here.`,
+      );
+
     case PaymentProvider.Braintree:
+      // TODO: implement Braintree provider service under lib/providers/braintree/
+      throw new Error(
+        `Provider "${provider}" is not implemented yet. ` +
+          `Add a service under lib/providers/${provider}/ and register it here.`,
+      );
+
     case PaymentProvider.Adyen:
+      // TODO: implement Adyen provider service under lib/providers/adyen/
+      throw new Error(
+        `Provider "${provider}" is not implemented yet. ` +
+          `Add a service under lib/providers/${provider}/ and register it here.`,
+      );
+
     case PaymentProvider.Custom:
+      // TODO: implement custom/webhook-only provider adapter if needed
       throw new Error(
         `Provider "${provider}" is not implemented yet. ` +
           `Add a service under lib/providers/${provider}/ and register it here.`,

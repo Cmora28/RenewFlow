@@ -10,11 +10,13 @@ import {
 export const runtime = "nodejs";
 
 /**
- * Stripe webhook endpoint.
+ * Stripe webhook endpoint (secure + fast).
  *
- * Fast path: verify signature → persist ProviderEvent → enqueue work → 2xx.
- * Heavy mapping (Customer / Subscription / Invoice / recovery) runs in a
- * background job via {@link ingestStripeWebhookEvent}.
+ * Security / reliability checklist:
+ * - Reads **raw** body via `req.text()` (required for signature verification)
+ * - Verifies `stripe-signature` with `STRIPE_WEBHOOK_SECRET` → 400 on failure
+ * - Idempotent `ProviderEvent` upsert keyed by Stripe `event.id`
+ * - Enqueues heavy work; returns 2xx without awaiting recovery processing
  */
 export async function POST(req: Request) {
   const rawBody = await req.text();

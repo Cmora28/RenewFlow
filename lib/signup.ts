@@ -1,6 +1,11 @@
 import { hash } from "bcryptjs";
 
 import { prisma } from "@/lib/prisma";
+import {
+  signUpSchema,
+  zodErrorMessage,
+  type SignUpInput,
+} from "@/lib/validation";
 
 function slugify(value: string): string {
   return value
@@ -24,12 +29,7 @@ async function uniqueWorkspaceSlug(baseName: string): Promise<string> {
   return `${base}-${Date.now().toString(36)}`;
 }
 
-export type SignUpInput = {
-  name: string;
-  email: string;
-  password: string;
-  workspaceName: string;
-};
+export type { SignUpInput };
 
 export type SignUpResult =
   | { ok: true; userId: string; workspaceId: string }
@@ -39,17 +39,16 @@ export type SignUpResult =
  * Create a user, their first workspace, and an OWNER membership.
  */
 export async function signUpUser(input: SignUpInput): Promise<SignUpResult> {
-  const email = input.email.trim().toLowerCase();
-  const name = input.name.trim();
-  const workspaceName = input.workspaceName.trim() || `${name}'s Workspace`;
-  const password = input.password;
-
-  if (!email || !password || password.length < 8) {
-    return {
-      ok: false,
-      error: "Use a valid email and a password with at least 8 characters.",
-    };
+  const parsed = signUpSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: zodErrorMessage(parsed.error) };
   }
+
+  const email = parsed.data.email.trim().toLowerCase();
+  const name = parsed.data.name.trim();
+  const workspaceName =
+    parsed.data.workspaceName.trim() || `${name}'s Workspace`;
+  const password = parsed.data.password;
 
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
