@@ -4,6 +4,12 @@ import { revalidatePath } from "next/cache";
 
 import { prisma } from "@/lib/prisma";
 import {
+  connectStripeSchema,
+  formDataToObject,
+  recoverySequenceSchema,
+  zodErrorMessage,
+} from "@/lib/validation";
+import {
   getCurrentWorkspace,
   requireWorkspaceOwner,
 } from "@/lib/workspace";
@@ -11,11 +17,12 @@ import {
 export async function connectStripeIntegration(formData: FormData) {
   try {
     const workspace = await requireWorkspaceOwner();
-    const accountId = String(formData.get("providerAccountId") || "").trim();
-
-    if (!accountId) {
-      return { ok: false as const, error: "Stripe account id is required" };
+    const parsed = connectStripeSchema.safeParse(formDataToObject(formData));
+    if (!parsed.success) {
+      return { ok: false as const, error: zodErrorMessage(parsed.error) };
     }
+
+    const accountId = parsed.data.providerAccountId;
 
     await prisma.paymentProviderIntegration.upsert({
       where: {
@@ -54,19 +61,12 @@ export async function connectStripeIntegration(formData: FormData) {
 export async function saveRecoverySequence(formData: FormData) {
   try {
     const workspace = await requireWorkspaceOwner();
-    const emailCount = Number(formData.get("emailCount") || 3);
-    const spanDays = Number(formData.get("spanDays") || 10);
-
-    if (
-      !Number.isFinite(emailCount) ||
-      !Number.isFinite(spanDays) ||
-      emailCount < 1 ||
-      emailCount > 10 ||
-      spanDays < 1 ||
-      spanDays > 60
-    ) {
-      return { ok: false as const, error: "Invalid recovery sequence values" };
+    const parsed = recoverySequenceSchema.safeParse(formDataToObject(formData));
+    if (!parsed.success) {
+      return { ok: false as const, error: zodErrorMessage(parsed.error) };
     }
+
+    const { emailCount, spanDays } = parsed.data;
 
     const current =
       workspace.settings &&

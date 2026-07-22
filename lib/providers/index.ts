@@ -3,7 +3,10 @@ export {
   handleStripeEvent,
   ingestStripeWebhookEvent,
   processStripeProviderEvent,
+  resolveStripeIntegrationForEvent,
   StripeProviderService,
+  StripeWebhookResolutionError,
+  StripeWebhookVerificationError,
   verifyStripeWebhookEvent,
 } from "./stripe";
 export {

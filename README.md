@@ -1,83 +1,62 @@
 # RenewFlow
 
-Provider-agnostic payment recovery for subscription businesses.
+Recover failed subscription renewals before they turn into churn.
 
-## Stack
+RenewFlow watches payment failures across billing providers, opens recovery
+cases, and runs email dunning with payment-update links so revenue comes back
+before customers disappear.
 
-- **Next.js 14** (App Router, TypeScript, Tailwind CSS)
+## Tech stack
+
+- **Next.js 14** (App Router) + TypeScript + Tailwind
 - **Prisma** + **PostgreSQL**
+- **NextAuth** (credentials / bcrypt)
+- **Stripe** (first provider) + provider-agnostic domain model
+- **Resend** (email) when configured
 
-## Getting started
+## Run locally
 
 ```bash
 cp .env.example .env
-# set DATABASE_URL, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
+# Required: DATABASE_URL, NEXTAUTH_SECRET, NEXTAUTH_URL
+# Stripe:   STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
+# Optional: RESEND_API_KEY, EMAIL_FROM, CRON_SECRET, APP_URL
 
 npm install
 npx prisma migrate dev
 npm run dev
 ```
 
-## Stripe webhooks
+App: http://localhost:3000 · Sign up at `/signup`
 
-Endpoint: `POST /api/webhooks/stripe`
+### Stripe keys
 
-1. Verifies `stripe-signature` with `STRIPE_WEBHOOK_SECRET`
-2. Idempotently stores the event in `ProviderEvent`
-3. Enqueues background processing (responds 2xx immediately)
-4. Maps `customer.*` / `invoice.*` into canonical records and recovery cases
-
-Point your Stripe webhook (or `stripe listen --forward-to localhost:3000/api/webhooks/stripe`) at this route.
-
-## Auth
-
-Credentials auth via NextAuth (email + hashed password).
-
-- `/signup` creates a User, Workspace, and OWNER WorkspaceMember
-- `/login` signs in
-- `/(app)/*` routes require a session
-- Workspace queries are scoped by the active `workspaceId` cookie
-- Only OWNER can modify Stripe integrations and global settings
-
-
-Provider-agnostic dunning lives under `lib/recovery/`:
-
-- `createRecoveryCase(paymentFailure)` — opens a case + schedules initial email
-- `scheduleAction({ scheduledFor })` — queue follow-up actions
-- `executeAction(actionId)` — payment-update session + email + `MessageDelivery`
-- `POST /api/jobs/run` — cron entrypoint for due `RecoveryAction`s
+| Env var | Purpose |
+|---------|---------|
+| `STRIPE_SECRET_KEY` | Server SDK (`lib/stripe.ts`) |
+| `STRIPE_WEBHOOK_SECRET` | Verify `POST /api/webhooks/stripe` signatures |
 
 ```bash
-curl -H "Authorization: Bearer $CRON_SECRET" \
-  "http://localhost:3000/api/jobs/run"
+stripe listen --forward-to localhost:3000/api/webhooks/stripe
 ```
 
-Email uses Resend when `RESEND_API_KEY` is set; otherwise a console adapter logs sends.
+Connect a Stripe account id under **Settings** (workspace owner) so webhooks
+resolve to the correct workspace.
 
-## Project structure
+## Plug in another provider
 
-```
-app/          # Next.js App Router (marketing + authenticated app)
-components/   # UI + app shell
-lib/          # Shared utilities (Prisma client, providers, recovery)
-prisma/       # schema + migrations
-styles/       # Global CSS
-```
+1. Implement `PaymentProviderService` under `lib/providers/<name>/` (see Stripe
+   in `lib/providers/stripe/` and stubs in `paddle/` / `gocardless/`).
+2. Register it in `lib/providers/registry.ts`.
+3. Add a webhook route that verifies signatures, stores `ProviderEvent`
+   idempotently, and enqueues work (mirror `/api/webhooks/stripe`).
+4. Keep recovery in `lib/recovery/` — it only uses canonical
+   `PaymentFailure` / `Invoice` / `Customer` models (no provider SDKs).
 
-### App routes
+## Notable routes
 
-| Route | Purpose |
-|-------|---------|
-| `/` | Marketing landing |
-| `/dashboard` | Workspace recovery metrics |
-| `/recovery` | Recovery case inbox |
-| `/recovery/[id]` | Case detail + manual actions |
-| `/settings` | Stripe connect + dunning sequence |
-
-## Prisma scripts
-
-| Script | Command |
-|--------|---------|
-| Generate client | `npm run db:generate` |
-| Migrate | `npm run db:migrate` |
-| Studio | `npm run db:studio` |
+| Path | Role |
+|------|------|
+| `/api/webhooks/stripe` | Signature verify → idempotent event → fast 2xx |
+| `/api/jobs/run` | Cron for due `RecoveryAction`s (`CRON_SECRET`) |
+| `/dashboard`, `/recovery`, `/settings` | Authenticated app (workspace-scoped) |

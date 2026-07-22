@@ -194,6 +194,38 @@ export async function executeAction(
       case "DUNNING_STEP":
         result = await executeEmailDunningAction(action.id, recoveryCase);
         break;
+      case "SMS":
+        // TODO: implement SMS dunning via Twilio (or similar) EmailService-style adapter
+        result = {
+          actionId,
+          status: "SKIPPED",
+          resultSummary: `Action type ${action.type} is not implemented yet`,
+        };
+        await prisma.recoveryAction.update({
+          where: { id: actionId },
+          data: {
+            status: "SKIPPED",
+            executedAt: new Date(),
+            resultSummary: result.resultSummary,
+          },
+        });
+        return result;
+      case "RETRY_PAYMENT":
+        // TODO: call provider-agnostic payment retry via PaymentProviderService
+        result = {
+          actionId,
+          status: "SKIPPED",
+          resultSummary: `Action type ${action.type} is not implemented yet`,
+        };
+        await prisma.recoveryAction.update({
+          where: { id: actionId },
+          data: {
+            status: "SKIPPED",
+            executedAt: new Date(),
+            resultSummary: result.resultSummary,
+          },
+        });
+        return result;
       default:
         result = {
           actionId,
@@ -390,8 +422,8 @@ async function createPaymentUpdateSession(args: {
       token,
       status: "PENDING",
       expiresAt,
-      // Hosted update URL is filled once we know APP_URL; providerUrl may be
-      // set later by a provider-specific payment-method update flow.
+      // TODO: when a provider-hosted payment-method update URL exists, set providerUrl
+      // from PaymentProviderService instead of (or in addition to) the app-hosted link.
       providerUrl: buildPaymentUpdateUrl(token),
       metadata: {
         createdBy: "recovery_engine",
@@ -403,6 +435,7 @@ async function createPaymentUpdateSession(args: {
 export function buildPaymentUpdateUrl(token: string): string {
   const base = (process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000")
     .replace(/\/$/, "");
+  // TODO: implement public /pay/update/[token] page that collects a new payment method
   return `${base}/pay/update/${token}`;
 }
 
