@@ -6,10 +6,12 @@ import {
   StripeConnectForm,
 } from "@/components/settings/SettingsForms";
 import { prisma } from "@/lib/prisma";
-import { getCurrentWorkspace } from "@/lib/workspace";
+import { getCurrentWorkspace, isWorkspaceOwner } from "@/lib/workspace";
 
 export default async function SettingsPage() {
   const workspace = await getCurrentWorkspace();
+  const canManage = isWorkspaceOwner(workspace.role);
+
   const stripeIntegration = await prisma.paymentProviderIntegration.findFirst({
     where: {
       workspaceId: workspace.id,
@@ -30,6 +32,14 @@ export default async function SettingsPage() {
         description="Connect providers and configure the default recovery sequence."
       />
 
+      {!canManage ? (
+        <p className="mb-4 rounded-md border border-border bg-accent-soft px-3 py-2 text-sm text-muted">
+          You have <strong>{workspace.role.toLowerCase()}</strong> access.
+          Only workspace owners can change provider integrations or global
+          settings.
+        </p>
+      ) : null}
+
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader className="flex items-center justify-between gap-3">
@@ -46,9 +56,16 @@ export default async function SettingsPage() {
             )}
           </CardHeader>
           <CardBody>
-            <StripeConnectForm
-              existingAccountId={stripeIntegration?.providerAccountId}
-            />
+            {canManage ? (
+              <StripeConnectForm
+                existingAccountId={stripeIntegration?.providerAccountId}
+              />
+            ) : (
+              <ReadOnlyValue
+                label="Stripe account ID"
+                value={stripeIntegration?.providerAccountId ?? "Not connected"}
+              />
+            )}
           </CardBody>
         </Card>
 
@@ -60,13 +77,35 @@ export default async function SettingsPage() {
             </p>
           </CardHeader>
           <CardBody>
-            <RecoverySequenceForm
-              emailCount={sequence.emailCount}
-              spanDays={sequence.spanDays}
-            />
+            {canManage ? (
+              <RecoverySequenceForm
+                emailCount={sequence.emailCount}
+                spanDays={sequence.spanDays}
+              />
+            ) : (
+              <div className="space-y-2 text-sm">
+                <ReadOnlyValue
+                  label="Emails"
+                  value={String(sequence.emailCount)}
+                />
+                <ReadOnlyValue
+                  label="Over days"
+                  value={String(sequence.spanDays)}
+                />
+              </div>
+            )}
           </CardBody>
         </Card>
       </div>
+    </div>
+  );
+}
+
+function ReadOnlyValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-xs uppercase tracking-wide text-muted">{label}</p>
+      <p className="mt-1 text-sm text-foreground">{value}</p>
     </div>
   );
 }

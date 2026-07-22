@@ -137,12 +137,14 @@ enum ProviderEventDeliveryStatus {
 // ─── Identity & tenancy ──────────────────────────────────────────────────────
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  imageUrl  String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  /// bcrypt hash for credentials auth (never expose to the client)
+  passwordHash String
+  imageUrl     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   memberships WorkspaceMember[]
 

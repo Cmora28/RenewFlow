@@ -29,7 +29,16 @@ Endpoint: `POST /api/webhooks/stripe`
 
 Point your Stripe webhook (or `stripe listen --forward-to localhost:3000/api/webhooks/stripe`) at this route.
 
-## Recovery engine
+## Auth
+
+Credentials auth via NextAuth (email + hashed password).
+
+- `/signup` creates a User, Workspace, and OWNER WorkspaceMember
+- `/login` signs in
+- `/(app)/*` routes require a session
+- Workspace queries are scoped by the active `workspaceId` cookie
+- Only OWNER can modify Stripe integrations and global settings
+
 
 Provider-agnostic dunning lives under `lib/recovery/`:
 
