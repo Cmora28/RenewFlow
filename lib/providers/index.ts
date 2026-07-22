@@ -1,5 +1,11 @@
 export { getProviderService, toAppPaymentProvider } from "./registry";
-export { StripeProviderService } from "./stripe/service";
+export {
+  handleStripeEvent,
+  ingestStripeWebhookEvent,
+  processStripeProviderEvent,
+  StripeProviderService,
+  verifyStripeWebhookEvent,
+} from "./stripe";
 export {
   PaymentProvider,
   type CanonicalCustomerInput,
