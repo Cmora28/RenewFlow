@@ -20,10 +20,12 @@ import type {
   SyncResult,
 } from "../types";
 import { PaymentProvider } from "../types";
+import { stripeAccountRequestOptions } from "./connect";
 
 /**
  * Stripe implementation of {@link PaymentProviderService}.
  * All Stripe SDK usage and payload mapping stay in `lib/providers/stripe/*`.
+ * Connected-account calls use the platform key + `stripeAccount` header.
  */
 export class StripeProviderService implements PaymentProviderService {
   readonly provider = PaymentProvider.Stripe;
@@ -33,12 +35,18 @@ export class StripeProviderService implements PaymentProviderService {
     private readonly integration: ProviderIntegrationRef,
   ) {}
 
+  /** Scope platform API calls to the connected Stripe account. */
+  private get accountOpts() {
+    return stripeAccountRequestOptions(this.integration.providerAccountId);
+  }
+
   async syncCustomers(workspaceId: string): Promise<SyncResult> {
     const result = emptySyncResult(workspaceId, this.provider);
 
-    for await (const stripeCustomer of this.stripe.customers.list({
-      limit: 100,
-    })) {
+    for await (const stripeCustomer of this.stripe.customers.list(
+      { limit: 100 },
+      this.accountOpts,
+    )) {
       if (stripeCustomer.deleted) {
         result.skipped += 1;
         continue;
@@ -64,11 +72,14 @@ export class StripeProviderService implements PaymentProviderService {
   async syncSubscriptions(workspaceId: string): Promise<SyncResult> {
     const result = emptySyncResult(workspaceId, this.provider);
 
-    for await (const stripeSubscription of this.stripe.subscriptions.list({
-      status: "all",
-      limit: 100,
-      expand: ["data.items.data.price"],
-    })) {
+    for await (const stripeSubscription of this.stripe.subscriptions.list(
+      {
+        status: "all",
+        limit: 100,
+        expand: ["data.items.data.price"],
+      },
+      this.accountOpts,
+    )) {
       try {
         const providerCustomerId = asStripeId(stripeSubscription.customer);
         if (!providerCustomerId) {
@@ -108,9 +119,10 @@ export class StripeProviderService implements PaymentProviderService {
   async syncInvoices(workspaceId: string): Promise<SyncResult> {
     const result = emptySyncResult(workspaceId, this.provider);
 
-    for await (const stripeInvoice of this.stripe.invoices.list({
-      limit: 100,
-    })) {
+    for await (const stripeInvoice of this.stripe.invoices.list(
+      { limit: 100 },
+      this.accountOpts,
+    )) {
       try {
         if (!stripeInvoice.id) {
           result.skipped += 1;
@@ -248,6 +260,29 @@ export class StripeProviderService implements PaymentProviderService {
           providerEventId,
         );
         return { ...base, ...result };
+      }
+
+      case "account.application.deauthorized": {
+        // Connected account revoked RenewFlow's access.
+        await prisma.paymentProviderIntegration.updateMany({
+          where: {
+            workspaceId,
+            provider: "STRIPE",
+            providerAccountId: this.integration.providerAccountId,
+          },
+          data: {
+            status: "DISABLED",
+            metadata: {
+              disabledReason: "account.application.deauthorized",
+              disabledAt: new Date().toISOString(),
+            },
+          },
+        });
+        return {
+          ...base,
+          handled: true,
+          action: "disabled_integration_deauthorized",
+        };
       }
 
       default:
@@ -709,7 +744,11 @@ export class StripeProviderService implements PaymentProviderService {
     }
 
     try {
-      const retrieved = await this.stripe.customers.retrieve(providerCustomerId);
+      const retrieved = await this.stripe.customers.retrieve(
+        providerCustomerId,
+        undefined,
+        this.accountOpts,
+      );
       if (retrieved.deleted) {
         return null;
       }
@@ -760,10 +799,11 @@ export class StripeProviderService implements PaymentProviderService {
     }
 
     try {
-      const stripeSubscription =
-        await this.stripe.subscriptions.retrieve(providerSubscriptionId, {
-          expand: ["items.data.price"],
-        });
+      const stripeSubscription = await this.stripe.subscriptions.retrieve(
+        providerSubscriptionId,
+        { expand: ["items.data.price"] },
+        this.accountOpts,
+      );
       const providerCustomerId = asStripeId(stripeSubscription.customer);
       if (!providerCustomerId) {
         return null;
