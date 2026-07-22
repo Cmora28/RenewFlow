@@ -48,12 +48,22 @@ Email uses Resend when `RESEND_API_KEY` is set; otherwise a console adapter logs
 ## Project structure
 
 ```
-app/          # Next.js App Router
-components/   # Shared UI
-lib/          # Shared utilities (Prisma client, etc.)
+app/          # Next.js App Router (marketing + authenticated app)
+components/   # UI + app shell
+lib/          # Shared utilities (Prisma client, providers, recovery)
 prisma/       # schema + migrations
 styles/       # Global CSS
 ```
+
+### App routes
+
+| Route | Purpose |
+|-------|---------|
+| `/` | Marketing landing |
+| `/dashboard` | Workspace recovery metrics |
+| `/recovery` | Recovery case inbox |
+| `/recovery/[id]` | Case detail + manual actions |
+| `/settings` | Stripe connect + dunning sequence |
 
 ## Prisma scripts
 
