@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
+
+import { Providers } from "@/components/Providers";
 import "@/styles/globals.css";
 
 const geistSans = localFont({
@@ -15,7 +17,7 @@ const geistMono = localFont({
 
 export const metadata: Metadata = {
   title: "RenewFlow",
-  description: "Provider-agnostic payment recovery for subscription businesses",
+  description: "Recover failed subscription renewals before they turn into churn",
 };
 
 export default function RootLayout({
@@ -26,9 +28,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} min-h-screen antialiased`}
       >
-        {children}
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

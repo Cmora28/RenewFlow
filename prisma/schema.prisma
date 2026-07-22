@@ -62,6 +62,12 @@ enum InvoiceStatus {
   UNCOLLECTIBLE
 }
 
+enum PaymentFailureStatus {
+  OPEN
+  RECOVERED
+  WRITTEN_OFF
+}
+
 enum RecoveryCaseStatus {
   OPEN
   IN_PROGRESS
@@ -131,12 +137,14 @@ enum ProviderEventDeliveryStatus {
 // ─── Identity & tenancy ──────────────────────────────────────────────────────
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  imageUrl  String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  /// bcrypt hash for credentials auth (never expose to the client)
+  passwordHash String
+  imageUrl     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   memberships WorkspaceMember[]
 
@@ -147,6 +155,8 @@ model Workspace {
   id        String   @id @default(cuid())
   name      String
   slug      String   @unique
+  /// App settings (e.g. default recovery sequence). Provider-agnostic.
+  settings  Json?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -298,21 +308,23 @@ model Invoice {
 // ─── Recovery domain ─────────────────────────────────────────────────────────
 
 model PaymentFailure {
-  id              String   @id @default(cuid())
+  id              String               @id @default(cuid())
   workspaceId     String
   customerId      String
   subscriptionId  String?
   invoiceId       String?
   providerEventId String?
+  status          PaymentFailureStatus @default(OPEN)
   failureCode     String?
   failureMessage  String?
   declineCode     String?
-  amount          Decimal  @db.Decimal(18, 4)
-  currency        String   @db.Char(3)
+  amount          Decimal              @db.Decimal(18, 4)
+  currency        String               @db.Char(3)
   failedAt        DateTime
+  recoveredAt     DateTime?
   metadata        Json?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
 
   workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   customer      Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
@@ -322,6 +334,7 @@ model PaymentFailure {
   recoveryCases RecoveryCase[]
 
   @@index([workspaceId, failedAt])
+  @@index([workspaceId, status])
   @@index([customerId])
   @@index([invoiceId])
   @@index([subscriptionId])
