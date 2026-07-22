@@ -33,15 +33,19 @@ App: http://localhost:3000 · Sign up at `/signup`
 
 | Env var | Purpose |
 |---------|---------|
-| `STRIPE_SECRET_KEY` | Server SDK (`lib/stripe.ts`) |
+| `STRIPE_SECRET_KEY` | Platform secret key (`lib/stripe.ts`) |
 | `STRIPE_WEBHOOK_SECRET` | Verify `POST /api/webhooks/stripe` signatures |
+| `STRIPE_CLIENT_ID` | Connect OAuth (`ca_...`) for **Connect with Stripe** |
 
 ```bash
 stripe listen --forward-to localhost:3000/api/webhooks/stripe
 ```
 
-Connect a Stripe account id under **Settings** (workspace owner) so webhooks
-resolve to the correct workspace.
+**Client setup (recommended):** Settings → **Connect with Stripe** (OAuth).  
+No secret keys shared. Webhooks use Connect `event.account` → workspace.
+
+**Platform setup:** enable Stripe Connect, set redirect URI to  
+`/api/stripe/connect/callback`, and use a Connect-aware webhook endpoint.
 
 ## Plug in another provider
 

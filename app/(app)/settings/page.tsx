@@ -3,12 +3,22 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { PageHeader } from "@/components/ui/PageHeader";
 import {
   RecoverySequenceForm,
-  StripeConnectForm,
+  StripeConnectPanel,
 } from "@/components/settings/SettingsForms";
 import { prisma } from "@/lib/prisma";
+import { isStripeConnectConfigured } from "@/lib/providers/stripe/connect";
 import { getCurrentWorkspace, isWorkspaceOwner } from "@/lib/workspace";
 
-export default async function SettingsPage() {
+type SearchParams =
+  | Promise<{ stripe_connected?: string; stripe_error?: string }>
+  | { stripe_connected?: string; stripe_error?: string };
+
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: SearchParams;
+}) {
+  const params = await Promise.resolve(searchParams);
   const workspace = await getCurrentWorkspace();
   const canManage = isWorkspaceOwner(workspace.role);
 
@@ -16,6 +26,7 @@ export default async function SettingsPage() {
     where: {
       workspaceId: workspace.id,
       provider: "STRIPE",
+      status: { in: ["ACTIVE", "PENDING", "DISABLED"] },
     },
     orderBy: { updatedAt: "desc" },
   });
@@ -25,12 +36,33 @@ export default async function SettingsPage() {
     spanDays: 10,
   };
 
+  const connectedVia =
+    stripeIntegration?.metadata &&
+    typeof stripeIntegration.metadata === "object" &&
+    !Array.isArray(stripeIntegration.metadata)
+      ? String(
+          (stripeIntegration.metadata as Record<string, unknown>).connectedVia ??
+            "",
+        )
+      : null;
+
   return (
     <div>
       <PageHeader
         title="Settings"
         description="Connect providers and configure the default recovery sequence."
       />
+
+      {params.stripe_connected ? (
+        <p className="mb-4 rounded-md border border-border bg-emerald-50 px-3 py-2 text-sm text-success">
+          Stripe connected successfully.
+        </p>
+      ) : null}
+      {params.stripe_error ? (
+        <p className="mb-4 rounded-md border border-border bg-red-50 px-3 py-2 text-sm text-danger">
+          Stripe connection failed: {params.stripe_error}
+        </p>
+      ) : null}
 
       {!canManage ? (
         <p className="mb-4 rounded-md border border-border bg-accent-soft px-3 py-2 text-sm text-muted">
@@ -46,24 +78,38 @@ export default async function SettingsPage() {
             <div>
               <h2 className="text-sm font-semibold">Stripe connection</h2>
               <p className="text-xs text-muted">
-                Stores a PaymentProviderIntegration for webhook routing.
+                Prefer Connect OAuth — clients never share secret keys.
               </p>
             </div>
-            {stripeIntegration ? (
-              <Badge tone="success">{stripeIntegration.status}</Badge>
+            {stripeIntegration?.status === "ACTIVE" ? (
+              <Badge tone="success">ACTIVE</Badge>
+            ) : stripeIntegration?.status === "DISABLED" ? (
+              <Badge tone="warning">DISABLED</Badge>
             ) : (
               <Badge tone="warning">Not connected</Badge>
             )}
           </CardHeader>
           <CardBody>
             {canManage ? (
-              <StripeConnectForm
-                existingAccountId={stripeIntegration?.providerAccountId}
+              <StripeConnectPanel
+                existingAccountId={
+                  stripeIntegration?.status === "ACTIVE" ||
+                  stripeIntegration?.status === "PENDING"
+                    ? stripeIntegration.providerAccountId
+                    : null
+                }
+                status={stripeIntegration?.status}
+                connectConfigured={isStripeConnectConfigured()}
+                connectedVia={connectedVia}
               />
             ) : (
               <ReadOnlyValue
                 label="Stripe account ID"
-                value={stripeIntegration?.providerAccountId ?? "Not connected"}
+                value={
+                  stripeIntegration?.status === "ACTIVE"
+                    ? stripeIntegration.providerAccountId
+                    : "Not connected"
+                }
               />
             )}
           </CardBody>
