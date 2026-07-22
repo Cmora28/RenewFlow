@@ -1,0 +1,490 @@
+// RenewFlow — provider-agnostic payment recovery domain model
+// https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum PaymentProvider {
+  STRIPE
+  CHARGEBEE
+  RECURLY
+  PADDLE
+  BRAINTREE
+  ADYEN
+  CUSTOM
+}
+
+enum IntegrationStatus {
+  PENDING
+  ACTIVE
+  DISABLED
+  ERROR
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  UNPAID
+  CANCELED
+  INCOMPLETE
+  INCOMPLETE_EXPIRED
+  PAUSED
+}
+
+enum BillingInterval {
+  DAY
+  WEEK
+  MONTH
+  YEAR
+  CUSTOM
+}
+
+enum InvoiceStatus {
+  DRAFT
+  OPEN
+  PAID
+  VOID
+  UNCOLLECTIBLE
+}
+
+enum RecoveryCaseStatus {
+  OPEN
+  IN_PROGRESS
+  RECOVERED
+  ABANDONED
+  CLOSED
+}
+
+enum RecoveryActionType {
+  EMAIL
+  SMS
+  IN_APP
+  RETRY_PAYMENT
+  DUNNING_STEP
+  PAYMENT_UPDATE_LINK
+  MANUAL_OUTREACH
+  WEBHOOK_CALLBACK
+}
+
+enum RecoveryActionStatus {
+  PENDING
+  SCHEDULED
+  IN_PROGRESS
+  SUCCEEDED
+  FAILED
+  CANCELED
+  SKIPPED
+}
+
+enum PaymentUpdateSessionStatus {
+  PENDING
+  OPEN
+  COMPLETED
+  EXPIRED
+  CANCELED
+}
+
+enum MessageChannel {
+  EMAIL
+  SMS
+  IN_APP
+  PUSH
+  WEBHOOK
+}
+
+enum MessageDeliveryStatus {
+  PENDING
+  QUEUED
+  SENT
+  DELIVERED
+  OPENED
+  CLICKED
+  BOUNCED
+  FAILED
+  CANCELED
+}
+
+enum ProviderEventDeliveryStatus {
+  RECEIVED
+  QUEUED
+  PROCESSING
+  PROCESSED
+  FAILED
+  IGNORED
+}
+
+// ─── Identity & tenancy ──────────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  imageUrl  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships WorkspaceMember[]
+
+  @@index([createdAt])
+}
+
+model Workspace {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members                  WorkspaceMember[]
+  providerIntegrations     PaymentProviderIntegration[]
+  customers                Customer[]
+  subscriptions            Subscription[]
+  invoices                 Invoice[]
+  paymentFailures          PaymentFailure[]
+  recoveryCases            RecoveryCase[]
+  paymentUpdateSessions    PaymentUpdateSession[]
+  messageTemplates         MessageTemplate[]
+  messageDeliveries        MessageDelivery[]
+  providerEvents           ProviderEvent[]
+
+  @@index([createdAt])
+}
+
+model WorkspaceMember {
+  id          String        @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceRole @default(MEMBER)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+  @@index([workspaceId, role])
+}
+
+// ─── Provider integration ────────────────────────────────────────────────────
+
+model PaymentProviderIntegration {
+  id                String            @id @default(cuid())
+  workspaceId       String
+  provider          PaymentProvider
+  providerAccountId String
+  status            IntegrationStatus @default(PENDING)
+  /// Opaque provider credentials / config (encrypt at rest in application layer)
+  credentials       Json?
+  metadata          Json?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  customers Customer[]
+
+  @@unique([workspaceId, provider, providerAccountId])
+  @@index([workspaceId, status])
+  @@index([provider, providerAccountId])
+}
+
+// ─── Canonical billing entities ──────────────────────────────────────────────
+
+model Customer {
+  id                 String   @id @default(cuid())
+  workspaceId        String
+  integrationId      String?
+  providerCustomerId String
+  email              String
+  name               String?
+  currency           String   @db.Char(3)
+  metadata           Json?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  workspace             Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  integration           PaymentProviderIntegration? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  subscriptions         Subscription[]
+  invoices              Invoice[]
+  paymentFailures       PaymentFailure[]
+  recoveryCases         RecoveryCase[]
+  paymentUpdateSessions PaymentUpdateSession[]
+  messageDeliveries     MessageDelivery[]
+
+  @@unique([workspaceId, providerCustomerId])
+  @@index([workspaceId, email])
+  @@index([integrationId])
+}
+
+model Subscription {
+  id                     String             @id @default(cuid())
+  workspaceId            String
+  customerId             String
+  providerSubscriptionId String
+  status                 SubscriptionStatus
+  planName               String
+  interval               BillingInterval
+  amount                 Decimal            @db.Decimal(18, 4)
+  currency               String             @db.Char(3)
+  currentPeriodStart     DateTime
+  currentPeriodEnd       DateTime
+  cancelAtPeriodEnd      Boolean            @default(false)
+  canceledAt             DateTime?
+  trialStart             DateTime?
+  trialEnd               DateTime?
+  metadata               Json?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  customer        Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  invoices        Invoice[]
+  paymentFailures PaymentFailure[]
+  recoveryCases   RecoveryCase[]
+
+  @@unique([workspaceId, providerSubscriptionId])
+  @@index([workspaceId, status])
+  @@index([customerId])
+  @@index([currentPeriodEnd])
+}
+
+model Invoice {
+  id                    String        @id @default(cuid())
+  workspaceId           String
+  customerId            String
+  subscriptionId        String?
+  providerInvoiceId     String
+  status                InvoiceStatus
+  amountDue             Decimal       @db.Decimal(18, 4)
+  amountPaid            Decimal       @db.Decimal(18, 4) @default(0)
+  amountRemaining       Decimal       @db.Decimal(18, 4)
+  currency              String        @db.Char(3)
+  attemptCount          Int           @default(0)
+  nextPaymentAttemptAt  DateTime?
+  paidAt                DateTime?
+  dueDate               DateTime?
+  metadata              Json?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  customer        Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  subscription    Subscription?    @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  paymentFailures PaymentFailure[]
+  recoveryCases   RecoveryCase[]
+
+  @@unique([workspaceId, providerInvoiceId])
+  @@index([workspaceId, status])
+  @@index([customerId])
+  @@index([subscriptionId])
+  @@index([nextPaymentAttemptAt])
+}
+
+// ─── Recovery domain ─────────────────────────────────────────────────────────
+
+model PaymentFailure {
+  id              String   @id @default(cuid())
+  workspaceId     String
+  customerId      String
+  subscriptionId  String?
+  invoiceId       String?
+  providerEventId String?
+  failureCode     String?
+  failureMessage  String?
+  declineCode     String?
+  amount          Decimal  @db.Decimal(18, 4)
+  currency        String   @db.Char(3)
+  failedAt        DateTime
+  metadata        Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  customer      Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  subscription  Subscription?  @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  invoice       Invoice?       @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  providerEvent ProviderEvent? @relation(fields: [providerEventId], references: [id], onDelete: SetNull)
+  recoveryCases RecoveryCase[]
+
+  @@index([workspaceId, failedAt])
+  @@index([customerId])
+  @@index([invoiceId])
+  @@index([subscriptionId])
+  @@index([providerEventId])
+  @@index([failureCode])
+}
+
+model RecoveryCase {
+  id               String             @id @default(cuid())
+  workspaceId      String
+  customerId       String
+  subscriptionId   String?
+  invoiceId        String?
+  paymentFailureId String?
+  status           RecoveryCaseStatus @default(OPEN)
+  openedAt         DateTime           @default(now())
+  closedAt         DateTime?
+  recoveredAmount  Decimal?           @db.Decimal(18, 4)
+  notes            String?
+  metadata         Json?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  workspace             Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  customer              Customer               @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  subscription          Subscription?          @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  invoice               Invoice?               @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  paymentFailure        PaymentFailure?        @relation(fields: [paymentFailureId], references: [id], onDelete: SetNull)
+  actions               RecoveryAction[]
+  paymentUpdateSessions PaymentUpdateSession[]
+  messageDeliveries     MessageDelivery[]
+
+  @@index([workspaceId, status])
+  @@index([customerId])
+  @@index([subscriptionId])
+  @@index([invoiceId])
+  @@index([paymentFailureId])
+  @@index([openedAt])
+}
+
+model RecoveryAction {
+  id             String               @id @default(cuid())
+  recoveryCaseId String
+  type           RecoveryActionType
+  status         RecoveryActionStatus @default(PENDING)
+  scheduledAt    DateTime?
+  executedAt     DateTime?
+  resultSummary  String?
+  metadata       Json?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  recoveryCase      RecoveryCase       @relation(fields: [recoveryCaseId], references: [id], onDelete: Cascade)
+  messageDeliveries MessageDelivery[]
+
+  @@index([recoveryCaseId, status])
+  @@index([type, status])
+  @@index([scheduledAt])
+}
+
+model PaymentUpdateSession {
+  id             String                     @id @default(cuid())
+  workspaceId    String
+  customerId     String
+  recoveryCaseId String?
+  token          String                     @unique @default(cuid())
+  status         PaymentUpdateSessionStatus @default(PENDING)
+  providerUrl    String?
+  expiresAt      DateTime
+  completedAt    DateTime?
+  metadata       Json?
+  createdAt      DateTime                   @default(now())
+  updatedAt      DateTime                   @updatedAt
+
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  customer     Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  recoveryCase RecoveryCase? @relation(fields: [recoveryCaseId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, status])
+  @@index([customerId])
+  @@index([recoveryCaseId])
+  @@index([expiresAt])
+}
+
+// ─── Messaging ───────────────────────────────────────────────────────────────
+
+model MessageTemplate {
+  id          String         @id @default(cuid())
+  workspaceId String
+  name        String
+  channel     MessageChannel
+  subject     String?
+  body        String
+  isActive    Boolean        @default(true)
+  metadata    Json?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  workspace  Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  deliveries MessageDelivery[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId, channel, isActive])
+}
+
+model MessageDelivery {
+  id                String                @id @default(cuid())
+  workspaceId       String
+  customerId        String
+  recoveryCaseId    String?
+  recoveryActionId  String?
+  messageTemplateId String?
+  channel           MessageChannel
+  status            MessageDeliveryStatus @default(PENDING)
+  toAddress         String?
+  subject           String?
+  body              String?
+  providerMessageId String?
+  errorMessage      String?
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  metadata          Json?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  customer        Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  recoveryCase    RecoveryCase?    @relation(fields: [recoveryCaseId], references: [id], onDelete: SetNull)
+  recoveryAction  RecoveryAction?  @relation(fields: [recoveryActionId], references: [id], onDelete: SetNull)
+  messageTemplate MessageTemplate? @relation(fields: [messageTemplateId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, status])
+  @@index([customerId])
+  @@index([recoveryCaseId])
+  @@index([recoveryActionId])
+  @@index([messageTemplateId])
+  @@index([providerMessageId])
+  @@index([sentAt])
+}
+
+// ─── Webhook / event log ─────────────────────────────────────────────────────
+
+model ProviderEvent {
+  id             String                      @id @default(cuid())
+  workspaceId    String
+  provider       PaymentProvider
+  providerEventId String
+  eventType      String
+  payloadJson    Json
+  deliveryStatus ProviderEventDeliveryStatus @default(RECEIVED)
+  processedAt    DateTime?
+  errorMessage   String?
+  receivedAt     DateTime                    @default(now())
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+
+  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  paymentFailures PaymentFailure[]
+
+  @@unique([workspaceId, provider, providerEventId])
+  @@index([workspaceId, eventType])
+  @@index([workspaceId, deliveryStatus])
+  @@index([provider, eventType])
+  @@index([receivedAt])
+  @@index([processedAt])
+}
