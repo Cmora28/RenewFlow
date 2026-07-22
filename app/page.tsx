@@ -5,12 +5,20 @@ export default function MarketingPage() {
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,#d8efe6_0%,#f4f7f5_45%,#eef3f8_100%)] text-foreground">
       <header className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-5">
         <p className="text-lg font-semibold tracking-tight">RenewFlow</p>
-        <Link
-          href="/dashboard"
-          className="rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:brightness-110"
-        >
-          Open app
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/login"
+            className="rounded-md px-3 py-2 text-sm font-medium text-foreground hover:bg-white/70"
+          >
+            Log in
+          </Link>
+          <Link
+            href="/signup"
+            className="rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:brightness-110"
+          >
+            Sign up
+          </Link>
+        </div>
       </header>
 
       <main className="mx-auto flex min-h-[70vh] w-full max-w-5xl flex-col justify-center px-6 pb-20 pt-10">
@@ -27,16 +35,16 @@ export default function MarketingPage() {
         </p>
         <div className="mt-8 flex flex-wrap gap-3">
           <Link
-            href="/dashboard"
+            href="/signup"
             className="rounded-md bg-accent px-4 py-2.5 text-sm font-medium text-white hover:brightness-110"
           >
             Request early access
           </Link>
           <Link
-            href="/recovery"
+            href="/login"
             className="rounded-md border border-border bg-white/80 px-4 py-2.5 text-sm font-medium text-foreground hover:bg-white"
           >
-            See recovery inbox
+            Log in to your workspace
           </Link>
         </div>
       </main>

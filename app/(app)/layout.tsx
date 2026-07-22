@@ -1,6 +1,10 @@
 import { Sidebar } from "@/components/app/Sidebar";
 import { Topbar } from "@/components/app/Topbar";
-import { getCurrentUser, getCurrentWorkspace } from "@/lib/workspace";
+import {
+  getCurrentWorkspace,
+  listUserWorkspaces,
+  requireUser,
+} from "@/lib/workspace";
 
 export const dynamic = "force-dynamic";
 
@@ -9,9 +13,10 @@ export default async function AppLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const [workspace, user] = await Promise.all([
+  const user = await requireUser();
+  const [workspace, workspaces] = await Promise.all([
     getCurrentWorkspace(),
-    getCurrentUser(),
+    listUserWorkspaces(user.id),
   ]);
 
   return (
@@ -19,8 +24,9 @@ export default async function AppLayout({
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar
-          workspaceName={workspace.name}
-          userName={user.name}
+          workspaces={workspaces}
+          currentWorkspaceId={workspace.id}
+          userName={user.name || user.email}
           userEmail={user.email}
         />
         <main className="flex-1 px-4 py-6 sm:px-6">{children}</main>

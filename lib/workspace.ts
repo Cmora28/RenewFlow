@@ -1,6 +1,11 @@
-import type { Prisma, Workspace } from "@prisma/client";
+import type { Prisma, Workspace, WorkspaceRole } from "@prisma/client";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 
+import { getSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+
+export const WORKSPACE_COOKIE = "renewflow_workspace_id";
 
 export type WorkspaceSettings = {
   recoverySequence?: {
@@ -11,6 +16,13 @@ export type WorkspaceSettings = {
 
 export type AppWorkspace = Workspace & {
   parsedSettings: WorkspaceSettings;
+  role: WorkspaceRole;
+};
+
+export type WorkspaceMembershipOption = {
+  id: string;
+  name: string;
+  role: WorkspaceRole;
 };
 
 function parseSettings(value: Prisma.JsonValue | null | undefined): WorkspaceSettings {
@@ -34,57 +46,100 @@ function parseSettings(value: Prisma.JsonValue | null | undefined): WorkspaceSet
   };
 }
 
-function withSettings(workspace: Workspace): AppWorkspace {
+function withContext(
+  workspace: Workspace,
+  role: WorkspaceRole,
+): AppWorkspace {
   return {
     ...workspace,
+    role,
     parsedSettings: parseSettings(workspace.settings),
   };
 }
 
-/**
- * Resolve the current workspace for the authenticated app shell.
- * Auth is not wired yet — uses the first workspace, or creates a demo one.
- */
-export async function getCurrentWorkspace(): Promise<AppWorkspace> {
-  const existing = await prisma.workspace.findFirst({
+export async function getCurrentUser() {
+  const session = await getSession();
+  if (!session?.user?.id) {
+    return null;
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { id: true, email: true, name: true },
+  });
+
+  return user;
+}
+
+export async function requireUser() {
+  const user = await getCurrentUser();
+  if (!user) {
+    redirect("/login");
+  }
+  return user;
+}
+
+export async function listUserWorkspaces(
+  userId: string,
+): Promise<WorkspaceMembershipOption[]> {
+  const memberships = await prisma.workspaceMember.findMany({
+    where: { userId },
+    include: { workspace: { select: { id: true, name: true } } },
     orderBy: { createdAt: "asc" },
   });
 
-  if (existing) {
-    return withSettings(existing);
-  }
-
-  try {
-    const created = await prisma.workspace.create({
-      data: {
-        name: "Demo Workspace",
-        slug: "demo",
-        settings: {
-          recoverySequence: { emailCount: 3, spanDays: 10 },
-        },
-      },
-    });
-    return withSettings(created);
-  } catch {
-    const raced = await prisma.workspace.findUnique({ where: { slug: "demo" } });
-    if (raced) {
-      return withSettings(raced);
-    }
-    const fallback = await prisma.workspace.findFirst({
-      orderBy: { createdAt: "asc" },
-    });
-    if (!fallback) {
-      throw new Error("Unable to resolve or create a workspace");
-    }
-    return withSettings(fallback);
-  }
+  return memberships.map((membership) => ({
+    id: membership.workspace.id,
+    name: membership.workspace.name,
+    role: membership.role,
+  }));
 }
 
-export async function getCurrentUser() {
-  // Placeholder until auth is added.
-  return {
-    id: "demo-user",
-    name: "Demo User",
-    email: "demo@renewflow.app",
-  };
+/**
+ * Resolve the active workspace for the signed-in user.
+ * Always validates membership and scopes subsequent queries by workspaceId.
+ */
+export async function getCurrentWorkspace(): Promise<AppWorkspace> {
+  const user = await requireUser();
+  const memberships = await prisma.workspaceMember.findMany({
+    where: { userId: user.id },
+    include: { workspace: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  if (memberships.length === 0) {
+    throw new Error("User has no workspace memberships");
+  }
+
+  const cookieStore = cookies();
+  const preferredId = cookieStore.get(WORKSPACE_COOKIE)?.value;
+  const selected =
+    memberships.find((membership) => membership.workspaceId === preferredId) ??
+    memberships[0];
+
+  if (!selected) {
+    throw new Error("Unable to resolve workspace membership");
+  }
+
+  return withContext(selected.workspace, selected.role);
+}
+
+export async function requireWorkspaceOwner(): Promise<AppWorkspace> {
+  const workspace = await getCurrentWorkspace();
+  if (workspace.role !== "OWNER") {
+    throw new Error("FORBIDDEN_OWNER_ONLY");
+  }
+  return workspace;
+}
+
+export function isWorkspaceOwner(role: WorkspaceRole): boolean {
+  return role === "OWNER";
+}
+
+/**
+ * Helper for queries: always pass this workspaceId filter.
+ */
+export async function workspaceScope(): Promise<{ workspaceId: string }> {
+  const workspace = await getCurrentWorkspace();
+  return { workspaceId: workspace.id };
 }
