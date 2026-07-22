@@ -153,6 +153,8 @@ model Workspace {
   id        String   @id @default(cuid())
   name      String
   slug      String   @unique
+  /// App settings (e.g. default recovery sequence). Provider-agnostic.
+  settings  Json?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
