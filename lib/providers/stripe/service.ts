@@ -8,6 +8,7 @@ import type {
 import type Stripe from "stripe";
 
 import { prisma } from "@/lib/prisma";
+import { createRecoveryCase } from "@/lib/recovery";
 
 import type {
   CanonicalCustomerInput,
@@ -397,19 +398,11 @@ export class StripeProviderService implements PaymentProviderService {
       },
     });
 
-    const recoveryCase = await prisma.recoveryCase.create({
-      data: {
-        workspaceId,
-        customerId,
-        subscriptionId,
-        invoiceId,
-        paymentFailureId: paymentFailure.id,
-        status: "OPEN",
-        openedAt: new Date(),
-        metadata: {
-          source: "stripe.invoice.payment_failed",
-          stripeInvoiceId: stripeInvoice.id,
-        } satisfies Prisma.InputJsonObject,
+    // Hand off to the provider-agnostic recovery engine (initial EMAIL action).
+    const { recoveryCase } = await createRecoveryCase(paymentFailure, {
+      metadata: {
+        source: "stripe.invoice.payment_failed",
+        stripeInvoiceId: stripeInvoice.id,
       },
     });
 
