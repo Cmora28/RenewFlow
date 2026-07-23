@@ -17,22 +17,16 @@ export function WorkspaceSelector({
   if (workspaces.length <= 1) {
     const only = workspaces[0];
     return (
-      <div>
-        <p className="text-xs uppercase tracking-wide text-muted">Workspace</p>
-        <p className="text-sm font-medium text-foreground">
-          {only?.name ?? "Workspace"}
-        </p>
-      </div>
+      <p className="text-sm font-medium text-foreground">
+        {only?.name ?? "Workspace"}
+      </p>
     );
   }
 
   return (
     <label className="block">
-      <span className="text-xs uppercase tracking-wide text-muted">
-        Workspace
-      </span>
       <select
-        className="mt-0.5 block rounded-md border border-border bg-white px-2 py-1.5 text-sm font-medium outline-none ring-accent focus:ring-2"
+        className="block rounded-md border border-hairline bg-transparent py-1 pl-0 pr-6 text-sm font-medium text-foreground outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20"
         value={currentWorkspaceId}
         disabled={pending}
         onChange={(event) => {

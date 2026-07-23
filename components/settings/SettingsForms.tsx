@@ -69,7 +69,7 @@ export function StripeConnectPanel({
           {connectConfigured ? (
             <Link
               href="/api/stripe/connect/start"
-              className="inline-flex h-8 items-center justify-center rounded-md bg-accent px-3 text-sm font-medium text-accent-foreground hover:brightness-110"
+              className="inline-flex h-10 items-center justify-center rounded-md bg-accent px-4 text-sm font-medium text-accent-foreground transition hover:bg-teal/90 active:scale-[0.98]"
             >
               Connect with Stripe
             </Link>
@@ -127,7 +127,7 @@ function ManualStripeAccountForm({
           name="providerAccountId"
           defaultValue={existingAccountId ?? ""}
           placeholder="acct_..."
-          className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm outline-none ring-accent focus:ring-2"
+          className="w-full rounded-md border border-hairline bg-card px-3 py-2 text-sm outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20"
           required
         />
       </label>
@@ -173,7 +173,7 @@ export function RecoverySequenceForm({
             min={1}
             max={10}
             defaultValue={emailCount}
-            className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm outline-none ring-accent focus:ring-2"
+            className="w-full rounded-md border border-hairline bg-card px-3 py-2 text-sm outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20"
             required
           />
         </label>
@@ -185,7 +185,7 @@ export function RecoverySequenceForm({
             min={1}
             max={60}
             defaultValue={spanDays}
-            className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm outline-none ring-accent focus:ring-2"
+            className="w-full rounded-md border border-hairline bg-card px-3 py-2 text-sm outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20"
             required
           />
         </label>

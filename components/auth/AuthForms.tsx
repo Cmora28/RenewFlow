@@ -15,7 +15,7 @@ export function SignupForm() {
 
   return (
     <form
-      className="space-y-3"
+      className="space-y-4"
       action={(formData) => {
         setError(null);
         startTransition(async () => {
@@ -80,7 +80,7 @@ export function LoginForm() {
 
   return (
     <form
-      className="space-y-3"
+      className="space-y-4"
       onSubmit={(event) => {
         event.preventDefault();
         setError(null);
@@ -134,15 +134,15 @@ function Field({
   placeholder?: string;
 }) {
   return (
-    <label className="block space-y-1 text-sm">
-      <span className="font-medium">{label}</span>
+    <label className="block space-y-1.5 text-sm">
+      <span className="font-medium text-foreground">{label}</span>
       <input
         name={name}
         type={type}
         required={required}
         minLength={minLength}
         placeholder={placeholder}
-        className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm outline-none ring-accent focus:ring-2"
+        className="w-full rounded-md border border-hairline bg-card px-3 py-2.5 text-sm outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20"
       />
     </label>
   );

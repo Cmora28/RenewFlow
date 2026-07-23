@@ -16,27 +16,46 @@ export function Table({
 }
 
 export function THead({ children }: PropsWithChildren) {
-  return <thead className="bg-accent-soft/60 text-muted">{children}</thead>;
+  return (
+    <thead className="border-b border-hairline bg-paper/80 text-muted">
+      {children}
+    </thead>
+  );
 }
 
 export function TBody({ children }: PropsWithChildren) {
-  return <tbody className="divide-y divide-border">{children}</tbody>;
+  return <tbody className="divide-y divide-hairline">{children}</tbody>;
 }
 
 export function TR({
   children,
   className,
   href,
-}: PropsWithChildren<{ className?: string; href?: string }>) {
+  style,
+}: PropsWithChildren<{
+  className?: string;
+  href?: string;
+  style?: React.CSSProperties;
+}>) {
   if (href) {
     return (
-      <tr className={cn("hover:bg-accent-soft/40", className)}>
+      <tr
+        className={cn(
+          "transition-colors duration-150 hover:bg-accent-soft/30",
+          className,
+        )}
+        style={style}
+      >
         {children}
       </tr>
     );
   }
 
-  return <tr className={className}>{children}</tr>;
+  return (
+    <tr className={cn("transition-colors duration-150", className)} style={style}>
+      {children}
+    </tr>
+  );
 }
 
 export function TH({
@@ -47,7 +66,7 @@ export function TH({
   return (
     <th
       className={cn(
-        "px-4 py-3 text-xs font-semibold uppercase tracking-wide",
+        "px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider",
         className,
       )}
       {...props}
@@ -63,7 +82,10 @@ export function TD({
   ...props
 }: PropsWithChildren<TdHTMLAttributes<HTMLTableCellElement>>) {
   return (
-    <td className={cn("px-4 py-3 align-middle text-foreground", className)} {...props}>
+    <td
+      className={cn("px-5 py-3.5 align-middle text-foreground", className)}
+      {...props}
+    >
       {children}
     </td>
   );

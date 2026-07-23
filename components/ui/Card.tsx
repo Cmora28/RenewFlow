@@ -2,15 +2,21 @@ import type { HTMLAttributes, PropsWithChildren } from "react";
 
 import { cn } from "@/lib/format";
 
+type CardVariant = "default" | "flush";
+
 export function Card({
   children,
   className,
+  variant = "default",
   ...props
-}: PropsWithChildren<HTMLAttributes<HTMLDivElement>>) {
+}: PropsWithChildren<
+  HTMLAttributes<HTMLDivElement> & { variant?: CardVariant }
+>) {
   return (
     <div
       className={cn(
-        "rounded-lg border border-border bg-card shadow-panel",
+        "border border-hairline bg-card",
+        variant === "default" ? "rounded-lg shadow-panel" : "rounded-lg",
         className,
       )}
       {...props}
@@ -25,7 +31,7 @@ export function CardHeader({
   className,
 }: PropsWithChildren<{ className?: string }>) {
   return (
-    <div className={cn("border-b border-border px-4 py-3", className)}>
+    <div className={cn("border-b border-hairline px-5 py-3.5", className)}>
       {children}
     </div>
   );
@@ -35,5 +41,5 @@ export function CardBody({
   children,
   className,
 }: PropsWithChildren<{ className?: string }>) {
-  return <div className={cn("px-4 py-4", className)}>{children}</div>;
+  return <div className={cn("px-5 py-4", className)}>{children}</div>;
 }

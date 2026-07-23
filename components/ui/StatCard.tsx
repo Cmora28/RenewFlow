@@ -1,4 +1,3 @@
-import { Card, CardBody } from "@/components/ui/Card";
 import { cn } from "@/lib/format";
 
 type StatCardProps = {
@@ -10,14 +9,19 @@ type StatCardProps = {
 
 export function StatCard({ label, value, hint, className }: StatCardProps) {
   return (
-    <Card className={cn(className)}>
-      <CardBody className="space-y-2">
-        <p className="text-sm text-muted">{label}</p>
-        <p className="text-2xl font-semibold tracking-tight text-foreground">
-          {value}
-        </p>
-        {hint ? <p className="text-xs text-muted">{hint}</p> : null}
-      </CardBody>
-    </Card>
+    <div
+      className={cn(
+        "rounded-lg border border-hairline bg-card px-5 py-4 shadow-panel",
+        className,
+      )}
+    >
+      <p className="text-xs font-medium uppercase tracking-wide text-muted">
+        {label}
+      </p>
+      <p className="mt-2 font-display text-3xl font-semibold tracking-tight text-foreground">
+        {value}
+      </p>
+      {hint ? <p className="mt-1.5 text-xs text-muted">{hint}</p> : null}
+    </div>
   );
 }

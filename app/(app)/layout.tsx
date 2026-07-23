@@ -20,7 +20,13 @@ export default async function AppLayout({
   ]);
 
   return (
-    <div className="flex min-h-screen bg-background">
+    <div className="flex min-h-screen flex-col bg-page md:flex-row">
+      {/* Mobile brand bar */}
+      <div className="flex items-center border-b border-hairline bg-card px-5 py-3 md:hidden">
+        <span className="font-display text-lg font-semibold text-ink">
+          RenewFlow
+        </span>
+      </div>
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar
@@ -29,7 +35,9 @@ export default async function AppLayout({
           userName={user.name || user.email}
           userEmail={user.email}
         />
-        <main className="flex-1 px-4 py-6 sm:px-6">{children}</main>
+        <main className="mx-auto w-full max-w-6xl flex-1 px-5 py-8 pb-20 sm:px-8 md:pb-8">
+          {children}
+        </main>
       </div>
     </div>
   );

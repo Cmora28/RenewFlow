@@ -77,17 +77,22 @@ export default async function RecoveryCaseDetailPage({
           </div>
         }
       >
-        <Link href="/recovery" className="text-sm text-accent hover:underline">
+        <Link
+          href="/recovery"
+          className="text-sm text-accent underline-offset-4 hover:underline"
+        >
           ← Back to recovery
         </Link>
       </PageHeader>
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid gap-5 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>
-            <h2 className="text-sm font-semibold">Invoice & failure</h2>
+            <h2 className="font-display text-base font-semibold">
+              Invoice & failure
+            </h2>
           </CardHeader>
-          <CardBody className="grid gap-4 sm:grid-cols-2">
+          <CardBody className="grid gap-5 sm:grid-cols-2">
             <Field label="Amount" value={amount} />
             <Field
               label="Provider"
@@ -120,9 +125,9 @@ export default async function RecoveryCaseDetailPage({
 
         <Card>
           <CardHeader>
-            <h2 className="text-sm font-semibold">Case status</h2>
+            <h2 className="font-display text-base font-semibold">Case status</h2>
           </CardHeader>
-          <CardBody className="space-y-3">
+          <CardBody className="space-y-4">
             <Field label="Started" value={formatDateTime(recoveryCase.openedAt)} />
             <Field label="Closed" value={formatDateTime(recoveryCase.closedAt)} />
             <Field
@@ -142,9 +147,9 @@ export default async function RecoveryCaseDetailPage({
         </Card>
       </div>
 
-      <Card className="mt-4">
+      <Card className="mt-5">
         <CardHeader>
-          <h2 className="text-sm font-semibold">Timeline</h2>
+          <h2 className="font-display text-base font-semibold">Timeline</h2>
           <p className="text-xs text-muted">
             Recovery actions and message deliveries
           </p>
@@ -153,10 +158,20 @@ export default async function RecoveryCaseDetailPage({
           {timeline.length === 0 ? (
             <p className="text-sm text-muted">No actions yet.</p>
           ) : (
-            <ol className="space-y-4">
-              {timeline.map((item) => (
-                <li key={item.id} className="flex gap-3">
-                  <div className="mt-1">
+            <ol className="relative space-y-0 border-l border-hairline pl-6">
+              {timeline.map((item, index) => (
+                <li key={item.id} className="relative pb-6 last:pb-0">
+                  <span
+                    aria-hidden
+                    className="absolute -left-[calc(1.5rem+3px)] top-1.5 h-1.5 w-1.5 rounded-full bg-accent"
+                  />
+                  {index < timeline.length - 1 ? (
+                    <span
+                      aria-hidden
+                      className="absolute -left-[calc(1.5rem+2px)] top-3 h-[calc(100%-0.5rem)] w-px bg-hairline"
+                    />
+                  ) : null}
+                  <div className="flex flex-wrap items-start gap-2">
                     <Badge
                       tone={
                         item.tone === "success"
@@ -169,10 +184,8 @@ export default async function RecoveryCaseDetailPage({
                       {formatDateTime(item.at)}
                     </Badge>
                   </div>
-                  <div>
-                    <p className="text-sm font-medium">{item.title}</p>
-                    <p className="text-sm text-muted">{item.detail}</p>
-                  </div>
+                  <p className="mt-1.5 text-sm font-medium">{item.title}</p>
+                  <p className="text-sm text-muted">{item.detail}</p>
                 </li>
               ))}
             </ol>
@@ -186,7 +199,9 @@ export default async function RecoveryCaseDetailPage({
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <p className="text-xs uppercase tracking-wide text-muted">{label}</p>
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+        {label}
+      </p>
       <p className="mt-1 text-sm text-foreground">{value}</p>
     </div>
   );

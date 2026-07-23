@@ -54,95 +54,98 @@ export default async function SettingsPage({
       />
 
       {params.stripe_connected ? (
-        <p className="mb-4 rounded-md border border-border bg-emerald-50 px-3 py-2 text-sm text-success">
+        <p className="mb-5 rounded-md border border-emerald-200/60 bg-emerald-50 px-4 py-2.5 text-sm text-success">
           Stripe connected successfully.
         </p>
       ) : null}
       {params.stripe_error ? (
-        <p className="mb-4 rounded-md border border-border bg-red-50 px-3 py-2 text-sm text-danger">
+        <p className="mb-5 rounded-md border border-red-200/60 bg-red-50 px-4 py-2.5 text-sm text-danger">
           Stripe connection failed: {params.stripe_error}
         </p>
       ) : null}
 
       {!canManage ? (
-        <p className="mb-4 rounded-md border border-border bg-accent-soft px-3 py-2 text-sm text-muted">
+        <p className="mb-5 rounded-md border border-hairline bg-accent-soft px-4 py-2.5 text-sm text-muted">
           You have <strong>{workspace.role.toLowerCase()}</strong> access.
           Only workspace owners can change provider integrations or global
           settings.
         </p>
       ) : null}
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold">Stripe connection</h2>
-              <p className="text-xs text-muted">
-                Prefer Connect OAuth — clients never share secret keys.
-              </p>
-            </div>
-            {stripeIntegration?.status === "ACTIVE" ? (
-              <Badge tone="success">ACTIVE</Badge>
-            ) : stripeIntegration?.status === "DISABLED" ? (
-              <Badge tone="warning">DISABLED</Badge>
-            ) : (
-              <Badge tone="warning">Not connected</Badge>
-            )}
-          </CardHeader>
-          <CardBody>
-            {canManage ? (
-              <StripeConnectPanel
-                existingAccountId={
-                  stripeIntegration?.status === "ACTIVE" ||
-                  stripeIntegration?.status === "PENDING"
-                    ? stripeIntegration.providerAccountId
-                    : null
-                }
-                status={stripeIntegration?.status}
-                connectConfigured={isStripeConnectConfigured()}
-                connectedVia={connectedVia}
-              />
-            ) : (
-              <ReadOnlyValue
-                label="Stripe account ID"
-                value={
-                  stripeIntegration?.status === "ACTIVE"
-                    ? stripeIntegration.providerAccountId
-                    : "Not connected"
-                }
-              />
-            )}
-          </CardBody>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <h2 className="text-sm font-semibold">Default recovery sequence</h2>
-            <p className="text-xs text-muted">
-              Used when scheduling dunning emails for new failures.
+      {/* Primary action: Stripe Connect */}
+      <Card className="mb-5 border-accent-muted/30 bg-accent-soft/20">
+        <CardHeader className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="font-display text-lg font-semibold">
+              Connect Stripe
+            </h2>
+            <p className="mt-0.5 text-sm text-muted">
+              Link your Stripe account via OAuth — clients never share secret keys.
             </p>
-          </CardHeader>
-          <CardBody>
-            {canManage ? (
-              <RecoverySequenceForm
-                emailCount={sequence.emailCount}
-                spanDays={sequence.spanDays}
+          </div>
+          {stripeIntegration?.status === "ACTIVE" ? (
+            <Badge tone="success">Active</Badge>
+          ) : stripeIntegration?.status === "DISABLED" ? (
+            <Badge tone="warning">Disabled</Badge>
+          ) : (
+            <Badge tone="neutral">Not connected</Badge>
+          )}
+        </CardHeader>
+        <CardBody>
+          {canManage ? (
+            <StripeConnectPanel
+              existingAccountId={
+                stripeIntegration?.status === "ACTIVE" ||
+                stripeIntegration?.status === "PENDING"
+                  ? stripeIntegration.providerAccountId
+                  : null
+              }
+              status={stripeIntegration?.status}
+              connectConfigured={isStripeConnectConfigured()}
+              connectedVia={connectedVia}
+            />
+          ) : (
+            <ReadOnlyValue
+              label="Stripe account ID"
+              value={
+                stripeIntegration?.status === "ACTIVE"
+                  ? stripeIntegration.providerAccountId
+                  : "Not connected"
+              }
+            />
+          )}
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <h2 className="font-display text-base font-semibold">
+            Default recovery sequence
+          </h2>
+          <p className="text-xs text-muted">
+            Used when scheduling dunning emails for new failures.
+          </p>
+        </CardHeader>
+        <CardBody>
+          {canManage ? (
+            <RecoverySequenceForm
+              emailCount={sequence.emailCount}
+              spanDays={sequence.spanDays}
+            />
+          ) : (
+            <div className="space-y-4 text-sm">
+              <ReadOnlyValue
+                label="Emails"
+                value={String(sequence.emailCount)}
               />
-            ) : (
-              <div className="space-y-2 text-sm">
-                <ReadOnlyValue
-                  label="Emails"
-                  value={String(sequence.emailCount)}
-                />
-                <ReadOnlyValue
-                  label="Over days"
-                  value={String(sequence.spanDays)}
-                />
-              </div>
-            )}
-          </CardBody>
-        </Card>
-      </div>
+              <ReadOnlyValue
+                label="Over days"
+                value={String(sequence.spanDays)}
+              />
+            </div>
+          )}
+        </CardBody>
+      </Card>
     </div>
   );
 }
@@ -150,7 +153,9 @@ export default async function SettingsPage({
 function ReadOnlyValue({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <p className="text-xs uppercase tracking-wide text-muted">{label}</p>
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+        {label}
+      </p>
       <p className="mt-1 text-sm text-foreground">{value}</p>
     </div>
   );
