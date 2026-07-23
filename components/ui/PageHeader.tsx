@@ -13,9 +13,9 @@ export function PageHeader({
   children,
 }: PageHeaderProps) {
   return (
-    <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+    <div className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
       <div className="space-y-1.5">
-        <h1 className="font-display text-3xl font-semibold tracking-tight text-foreground">
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-[1.75rem]">
           {title}
         </h1>
         {description ? (

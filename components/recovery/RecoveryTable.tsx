@@ -38,6 +38,22 @@ const filters: Array<{ key: RecoveryStatusFilter; label: string }> = [
   { key: "lost", label: "Lost" },
 ];
 
+const avatarTones = [
+  "bg-[#dceee8] text-[#0e7a66]",
+  "bg-[#e8e4f5] text-[#5b4a9a]",
+  "bg-[#f5e6d8] text-[#9a5b2e]",
+  "bg-[#dce8f5] text-[#2e5b9a]",
+  "bg-[#e8f0dc] text-[#4a7a2e]",
+];
+
+function avatarTone(name: string) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i += 1) {
+    hash = (hash + name.charCodeAt(i) * (i + 1)) % avatarTones.length;
+  }
+  return avatarTones[hash];
+}
+
 export function RecoveryFilters({
   current,
 }: {
@@ -55,16 +71,14 @@ export function RecoveryFilters({
             href={href}
             className={cn(
               "relative px-3 pb-3 pt-1 text-sm font-medium transition-colors",
-              active
-                ? "text-accent"
-                : "text-muted hover:text-foreground",
+              active ? "text-ink" : "text-muted hover:text-foreground",
             )}
           >
             {filter.label}
             {active ? (
               <span
                 aria-hidden
-                className="absolute inset-x-1 bottom-0 h-0.5 rounded-full bg-accent transition-all duration-200 ease-out"
+                className="absolute inset-x-2 bottom-0 h-[3px] rounded-full bg-ink"
               />
             ) : null}
           </Link>
@@ -78,9 +92,7 @@ export function RecoveryCasesTable({ rows }: { rows: RecoveryCaseRow[] }) {
   if (rows.length === 0) {
     return (
       <div className="px-5 py-16 text-center">
-        <p className="font-display text-lg font-semibold text-foreground">
-          No cases yet
-        </p>
+        <p className="text-lg font-semibold text-foreground">No cases yet</p>
         <p className="mt-1.5 text-sm text-muted">
           Recovery cases will appear here when failed payments are detected.
         </p>
@@ -108,17 +120,29 @@ export function RecoveryCasesTable({ rows }: { rows: RecoveryCaseRow[] }) {
             style={{ animationDelay: `${index * 35}ms` }}
           >
             <TD>
-              <Link href={`/recovery/${row.id}`} className="block">
-                <span className="font-medium text-foreground hover:text-accent">
-                  {row.customerName}
+              <Link href={`/recovery/${row.id}`} className="flex items-center gap-3">
+                <span
+                  className={cn(
+                    "flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-sm font-semibold",
+                    avatarTone(row.customerName),
+                  )}
+                >
+                  {(row.customerName.trim()[0] || "?").toUpperCase()}
                 </span>
-                <span className="mt-0.5 block text-xs text-muted">
-                  {row.customerEmail}
+                <span>
+                  <span className="block font-medium text-foreground hover:text-accent">
+                    {row.customerName}
+                  </span>
+                  <span className="mt-0.5 block text-xs text-muted">
+                    {row.customerEmail}
+                  </span>
                 </span>
               </Link>
             </TD>
             <TD>
-              <Link href={`/recovery/${row.id}`}>{row.amount}</Link>
+              <Link href={`/recovery/${row.id}`} className="font-medium">
+                {row.amount}
+              </Link>
             </TD>
             <TD>
               <Link href={`/recovery/${row.id}`}>
@@ -126,7 +150,8 @@ export function RecoveryCasesTable({ rows }: { rows: RecoveryCaseRow[] }) {
               </Link>
             </TD>
             <TD className="text-muted">
-              <Link href={`/recovery/${row.id}`}>
+              <Link href={`/recovery/${row.id}`} className="inline-flex items-center gap-1.5">
+                <ProviderDot provider={row.provider} />
                 {providerLabel(row.provider)}
               </Link>
             </TD>
@@ -147,6 +172,19 @@ export function RecoveryCasesTable({ rows }: { rows: RecoveryCaseRow[] }) {
   );
 }
 
+function ProviderDot({ provider }: { provider: PaymentProvider | null }) {
+  if (!provider) return null;
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "inline-block h-2 w-2 rounded-full",
+        provider === "STRIPE" ? "bg-[#635bff]" : "bg-accent",
+      )}
+    />
+  );
+}
+
 export function StatusBadge({ status }: { status: RecoveryCaseStatus }) {
   const tone =
     status === "RECOVERED"
@@ -155,9 +193,7 @@ export function StatusBadge({ status }: { status: RecoveryCaseStatus }) {
         ? "accent"
         : status === "IN_PROGRESS"
           ? "warning"
-          : status === "ABANDONED" || status === "CLOSED"
-            ? "neutral"
-            : "neutral";
+          : "neutral";
 
   return <Badge tone={tone}>{recoveryStatusLabel(status)}</Badge>;
 }

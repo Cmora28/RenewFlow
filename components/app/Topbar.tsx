@@ -22,10 +22,23 @@ export function Topbar({
 }: TopbarProps) {
   return (
     <header className="flex h-14 items-center justify-between border-b border-hairline bg-card px-5 sm:px-6">
-      <WorkspaceSelector
-        workspaces={workspaces}
-        currentWorkspaceId={currentWorkspaceId}
-      />
+      <div className="flex items-center gap-2.5">
+        <span className="hidden text-muted sm:inline" aria-hidden>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+            <path
+              d="M4 20V9l8-5 8 5v11H4Z"
+              stroke="currentColor"
+              strokeWidth="1.75"
+              strokeLinejoin="round"
+            />
+            <path d="M10 20v-6h4v6" stroke="currentColor" strokeWidth="1.75" />
+          </svg>
+        </span>
+        <WorkspaceSelector
+          workspaces={workspaces}
+          currentWorkspaceId={currentWorkspaceId}
+        />
+      </div>
       <ProfileDropdown name={userName} email={userEmail} />
     </header>
   );
@@ -57,9 +70,9 @@ function ProfileDropdown({ name, email }: { name: string; email: string }) {
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm transition hover:bg-accent-soft/60"
+        className="flex items-center gap-2.5 rounded-md px-1.5 py-1 text-sm transition hover:bg-accent-soft/60"
       >
-        <span className="flex h-8 w-8 items-center justify-center rounded-md bg-accent text-xs font-semibold text-accent-foreground">
+        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-xs font-semibold text-accent-foreground">
           {initials || "U"}
         </span>
         <span className="hidden text-left sm:block">
