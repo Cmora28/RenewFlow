@@ -384,6 +384,8 @@ model RecoveryAction {
   attemptCount   Int                  @default(0)
   /// Set while status is IN_PROGRESS. A stale lock can be reclaimed.
   lockedAt       DateTime?
+  /// Owner of the current claim. Completion writes must match this token.
+  lockToken      String?
   scheduledAt    DateTime?
   executedAt     DateTime?
   resultSummary  String?
@@ -493,6 +495,8 @@ model ProviderEvent {
   attemptCount   Int                         @default(0)
   /// Set while status is PROCESSING. A stale lock can be reclaimed.
   lockedAt       DateTime?
+  /// Owner of the current claim. Completion writes must match this token.
+  lockToken      String?
   processedAt    DateTime?
   errorMessage   String?
   receivedAt     DateTime                    @default(now())

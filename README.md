@@ -66,10 +66,10 @@ write. No environment variable turns that off.
 `/api/jobs/run` always requires `Authorization: Bearer <CRON_SECRET>`.
 A `?secret=` query parameter is ignored.
 
-Delivery is not exactly-once. If the email provider accepts a message and the
-process dies before the id is stored, the action is marked ambiguous and is
-not sent again automatically. A send already in flight when the invoice
-becomes paid can still go out once.
+Delivery is not exactly-once. A timeout, network error, or missing provider id
+does not call the provider again. A permanent rejection is not retried. A crash
+before the handoff can retry the same payment-update token. A send already in
+flight when the invoice becomes paid can still go out once.
 
 ## Later sandbox runbook
 
