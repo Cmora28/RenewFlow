@@ -54,7 +54,7 @@ export class ResendEmailService implements EmailService {
  */
 export class ConsoleEmailService implements EmailService {
   async send(input: SendEmailInput): Promise<SendEmailResult> {
-    // TODO: replace console logging with a real EmailService in production
+    // Do not log HTML, text, or payment-update URLs: they contain the token.
     const providerMessageId = `console_${Date.now()}`;
     console.info("[email:console] send", {
       to: input.to,

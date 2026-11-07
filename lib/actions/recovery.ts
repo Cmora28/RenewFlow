@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 
 import { prisma } from "@/lib/prisma";
 import { executeAction, scheduleAction } from "@/lib/recovery";
+import { invoiceBlocksDunning, isTerminalRecoveryCase } from "@/lib/recovery/status";
 import {
   recoveryCaseIdSchema,
   zodErrorMessage,
@@ -22,10 +23,21 @@ export async function resendRecoveryEmail(recoveryCaseId: string) {
       id: parsed.data.recoveryCaseId,
       workspaceId: workspace.id,
     },
+    include: { invoice: { select: { status: true } } },
   });
 
   if (!recoveryCase) {
     return { ok: false as const, error: "Recovery case not found" };
+  }
+
+  if (
+    isTerminalRecoveryCase(recoveryCase.status) ||
+    invoiceBlocksDunning(recoveryCase.invoice?.status)
+  ) {
+    return {
+      ok: false as const,
+      error: "Recovery case is closed; email was not sent",
+    };
   }
 
   const action = await scheduleAction({

@@ -4,6 +4,13 @@ const globalForStripe = globalThis as unknown as {
   stripe: Stripe | undefined;
 };
 
+let stripeClientOverride: Stripe | undefined;
+
+/** Test-only replacement. Production leaves this unset. */
+export function setStripeClientForTests(client: Stripe | undefined): void {
+  stripeClientOverride = client;
+}
+
 function createStripeClient(): Stripe {
   const secretKey = process.env.STRIPE_SECRET_KEY;
   if (!secretKey) {
@@ -20,6 +27,9 @@ function createStripeClient(): Stripe {
  * Lazily initialized so importing this module during build does not require env.
  */
 export function getStripe(): Stripe {
+  if (stripeClientOverride) {
+    return stripeClientOverride;
+  }
   if (!globalForStripe.stripe) {
     globalForStripe.stripe = createStripeClient();
   }

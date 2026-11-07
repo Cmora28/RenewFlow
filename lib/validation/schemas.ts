@@ -35,13 +35,6 @@ export const connectStripeSchema = z.object({
 
 export type ConnectStripeInput = z.infer<typeof connectStripeSchema>;
 
-export const recoverySequenceSchema = z.object({
-  emailCount: z.coerce.number().int().min(1).max(10),
-  spanDays: z.coerce.number().int().min(1).max(60),
-});
-
-export type RecoverySequenceInput = z.infer<typeof recoverySequenceSchema>;
-
 /** Recovery actions */
 export const recoveryCaseIdSchema = z.object({
   recoveryCaseId: z.string().cuid("Invalid recovery case id"),
@@ -50,7 +43,6 @@ export const recoveryCaseIdSchema = z.object({
 /** Jobs / cron */
 export const runJobsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional().default(50),
-  secret: z.string().optional(),
 });
 
 export type RunJobsQuery = z.infer<typeof runJobsQuerySchema>;

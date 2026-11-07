@@ -7,13 +7,9 @@ import { revokeStripeConnectAccount } from "@/lib/providers/stripe/connect";
 import {
   connectStripeSchema,
   formDataToObject,
-  recoverySequenceSchema,
   zodErrorMessage,
 } from "@/lib/validation";
-import {
-  getCurrentWorkspace,
-  requireWorkspaceOwner,
-} from "@/lib/workspace";
+import { requireWorkspaceOwner } from "@/lib/workspace";
 
 /**
  * Manual fallback: paste an account id (advanced / non-OAuth).
@@ -138,47 +134,3 @@ export async function disconnectStripeIntegration() {
   }
 }
 
-export async function saveRecoverySequence(formData: FormData) {
-  try {
-    const workspace = await requireWorkspaceOwner();
-    const parsed = recoverySequenceSchema.safeParse(formDataToObject(formData));
-    if (!parsed.success) {
-      return { ok: false as const, error: zodErrorMessage(parsed.error) };
-    }
-
-    const { emailCount, spanDays } = parsed.data;
-
-    const current =
-      workspace.settings &&
-      typeof workspace.settings === "object" &&
-      !Array.isArray(workspace.settings)
-        ? (workspace.settings as Record<string, unknown>)
-        : {};
-
-    await prisma.workspace.update({
-      where: { id: workspace.id },
-      data: {
-        settings: {
-          ...current,
-          recoverySequence: { emailCount, spanDays },
-        },
-      },
-    });
-
-    revalidatePath("/settings");
-    return { ok: true as const };
-  } catch (error) {
-    if (error instanceof Error && error.message === "FORBIDDEN_OWNER_ONLY") {
-      return {
-        ok: false as const,
-        error: "Only workspace owners can modify global settings.",
-      };
-    }
-    throw error;
-  }
-}
-
-/** Read-only helper still used by settings page for non-owners. */
-export async function getSettingsWorkspace() {
-  return getCurrentWorkspace();
-}

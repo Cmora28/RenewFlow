@@ -1,5 +1,7 @@
+import { timingSafeEqual } from "crypto";
 import { NextResponse } from "next/server";
 
+import { drainStripeProviderEvents } from "@/lib/providers/stripe/webhook";
 import { runDueRecoveryActions } from "@/lib/recovery";
 import { runJobsQuerySchema, zodErrorMessage } from "@/lib/validation";
 
@@ -7,11 +9,14 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Cron entrypoint for the recovery workflow engine.
+ * Cron entrypoint.
  *
- * Secure with `CRON_SECRET`:
- *   Authorization: Bearer <CRON_SECRET>
- *   or `?secret=<CRON_SECRET>`
+ * Requires `Authorization: Bearer <CRON_SECRET>` in every environment,
+ * including development and test. Query-string secrets are ignored.
+ *
+ * Drains stranded Stripe provider events first, then due recovery actions,
+ * so a webhook that only persisted a row can still open a case and send
+ * the one MVP email on the same tick.
  */
 export async function POST(req: Request) {
   if (!authorize(req)) {
@@ -21,7 +26,6 @@ export async function POST(req: Request) {
   const url = new URL(req.url);
   const parsed = runJobsQuerySchema.safeParse({
     limit: url.searchParams.get("limit") ?? undefined,
-    secret: url.searchParams.get("secret") ?? undefined,
   });
 
   if (!parsed.success) {
@@ -31,16 +35,21 @@ export async function POST(req: Request) {
     );
   }
 
-  const result = await runDueRecoveryActions({ limit: parsed.data.limit });
+  const providerEvents = await drainStripeProviderEvents({
+    limit: parsed.data.limit,
+  });
+  const recoveryActions = await runDueRecoveryActions({
+    limit: parsed.data.limit,
+  });
 
   return NextResponse.json({
     ok: true,
-    job: "recovery_actions",
-    ...result,
+    providerEvents,
+    recoveryActions,
   });
 }
 
-/** Allow GET for simple cron providers that only support GET. */
+/** Allow GET for cron providers that can send an Authorization header. */
 export async function GET(req: Request) {
   return POST(req);
 }
@@ -48,15 +57,20 @@ export async function GET(req: Request) {
 function authorize(req: Request): boolean {
   const secret = process.env.CRON_SECRET;
   if (!secret) {
-    // Fail closed in production; allow open in development for local testing.
-    return process.env.NODE_ENV !== "production";
+    return false;
   }
 
   const header = req.headers.get("authorization");
-  if (header === `Bearer ${secret}`) {
-    return true;
+  if (!header?.startsWith("Bearer ")) {
+    return false;
   }
 
-  const url = new URL(req.url);
-  return url.searchParams.get("secret") === secret;
+  const token = header.slice("Bearer ".length);
+  const provided = Buffer.from(token);
+  const expected = Buffer.from(secret);
+  if (provided.length !== expected.length) {
+    return false;
+  }
+
+  return timingSafeEqual(provided, expected);
 }

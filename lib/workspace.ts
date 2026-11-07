@@ -1,4 +1,4 @@
-import type { Prisma, Workspace, WorkspaceRole } from "@prisma/client";
+import type { Workspace, WorkspaceRole } from "@prisma/client";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
@@ -7,15 +7,7 @@ import { prisma } from "@/lib/prisma";
 
 export const WORKSPACE_COOKIE = "renewflow_workspace_id";
 
-export type WorkspaceSettings = {
-  recoverySequence?: {
-    emailCount: number;
-    spanDays: number;
-  };
-};
-
 export type AppWorkspace = Workspace & {
-  parsedSettings: WorkspaceSettings;
   role: WorkspaceRole;
 };
 
@@ -25,27 +17,6 @@ export type WorkspaceMembershipOption = {
   role: WorkspaceRole;
 };
 
-function parseSettings(value: Prisma.JsonValue | null | undefined): WorkspaceSettings {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {
-      recoverySequence: { emailCount: 3, spanDays: 10 },
-    };
-  }
-
-  const record = value as Record<string, unknown>;
-  const sequence = record.recoverySequence as
-    | { emailCount?: unknown; spanDays?: unknown }
-    | undefined;
-
-  return {
-    recoverySequence: {
-      emailCount:
-        typeof sequence?.emailCount === "number" ? sequence.emailCount : 3,
-      spanDays: typeof sequence?.spanDays === "number" ? sequence.spanDays : 10,
-    },
-  };
-}
-
 function withContext(
   workspace: Workspace,
   role: WorkspaceRole,
@@ -53,7 +24,6 @@ function withContext(
   return {
     ...workspace,
     role,
-    parsedSettings: parseSettings(workspace.settings),
   };
 }
 
