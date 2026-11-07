@@ -135,20 +135,47 @@ describe("stripe webhook guards", () => {
     });
   });
 
-  it("rejects live mode before any write", async () => {
-    const graph = await seedWorkspace();
-    const event = invoiceEvent({
-      type: "invoice.payment_failed",
-      account: graph.accountId,
-      customer: graph.customer.providerCustomerId,
-      status: "open",
-      amountRemaining: 2000,
-      livemode: true,
-    });
+  it("rejects live mode before any write even if STRIPE_ALLOW_LIVEMODE is set", async () => {
+    const previous = process.env.STRIPE_ALLOW_LIVEMODE;
+    process.env.STRIPE_ALLOW_LIVEMODE = "true";
+    try {
+      const graph = await seedWorkspace();
+      const event = invoiceEvent({
+        type: "invoice.payment_failed",
+        account: graph.accountId,
+        customer: graph.customer.providerCustomerId,
+        status: "open",
+        amountRemaining: 2000,
+        livemode: true,
+      });
 
-    const response = await postWebhook(webhookRequest(event));
-    expect(response.status).toBe(400);
-    expect(await counts()).toMatchObject({ events: 0, cases: 0, invoices: 0 });
+      const response = await postWebhook(webhookRequest(event));
+      expect(response.status).toBe(400);
+      expect(await counts()).toMatchObject({ events: 0, cases: 0, invoices: 0 });
+
+      await prisma.providerEvent.create({
+        data: {
+          workspaceId: graph.workspace.id,
+          provider: "STRIPE",
+          providerEventId: "evt_live_queued",
+          eventType: event.type,
+          payloadJson: event as unknown as object,
+          deliveryStatus: "QUEUED",
+        },
+      });
+      await drainStripeProviderEvents();
+      expect(await prisma.recoveryCase.count()).toBe(0);
+      expect(await prisma.paymentFailure.count()).toBe(0);
+      expect(await prisma.messageDelivery.count()).toBe(0);
+      expect(
+        (await prisma.providerEvent.findFirstOrThrow({
+          where: { providerEventId: "evt_live_queued" },
+        })).deliveryStatus,
+      ).toBe("IGNORED");
+    } finally {
+      if (previous === undefined) delete process.env.STRIPE_ALLOW_LIVEMODE;
+      else process.env.STRIPE_ALLOW_LIVEMODE = previous;
+    }
   });
 
   it("does not route on metadata or a single active integration", async () => {

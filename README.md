@@ -22,7 +22,7 @@ cp .env.example .env
 # Stripe:   STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
 # Required for cron: CRON_SECRET (Bearer header; required in every environment)
 # Optional: RESEND_API_KEY, EMAIL_FROM, APP_URL
-# Do not set STRIPE_ALLOW_LIVEMODE for sandbox or local runs
+# Live-mode Stripe events are always rejected. There is no enablement variable.
 
 npm install
 npx prisma migrate dev
@@ -39,7 +39,6 @@ App: http://localhost:3000 · Sign up at `/signup`
 | `STRIPE_WEBHOOK_SECRET` | Verify `POST /api/webhooks/stripe` signatures |
 | `STRIPE_CLIENT_ID` | Connect OAuth (`ca_...`) for **Connect with Stripe** |
 | `CRON_SECRET` | Bearer token for `POST /api/jobs/run` (required everywhere) |
-| `STRIPE_ALLOW_LIVEMODE` | Exact `true` accepts live events. Leave unset. Not a production switch. |
 
 ```bash
 stripe listen --forward-to localhost:3000/api/webhooks/stripe
@@ -61,8 +60,8 @@ invoice (`status=paid` and `amount_remaining=0`) on the connected account that
 owns the workspace.
 
 Webhook routing uses `event.account` only. Metadata-only and single-active
-fallbacks are not used. Live-mode events are rejected unless
-`STRIPE_ALLOW_LIVEMODE` is exactly `true`.
+fallbacks are not used. Every `livemode: true` event is rejected before any
+write. No environment variable turns that off.
 
 `/api/jobs/run` always requires `Authorization: Bearer <CRON_SECRET>`.
 A `?secret=` query parameter is ignored.
@@ -78,11 +77,11 @@ Not executed by CI. Do not use live keys, production data, or a real inbox
 until that phase is separately approved.
 
 1. Disposable Postgres and a Stripe **test** platform plus a disposable connected account.
-2. Set `DATABASE_URL`, `NEXTAUTH_SECRET`, `NEXTAUTH_URL`, `APP_URL`, `STRIPE_SECRET_KEY` (`sk_test_...`), `STRIPE_WEBHOOK_SECRET` (test endpoint), `CRON_SECRET`. Leave `RESEND_API_KEY` and `STRIPE_ALLOW_LIVEMODE` unset so mail stays on the console and live events are rejected.
+2. Set `DATABASE_URL`, `NEXTAUTH_SECRET`, `NEXTAUTH_URL`, `APP_URL`, `STRIPE_SECRET_KEY` (`sk_test_...`), `STRIPE_WEBHOOK_SECRET` (test endpoint), `CRON_SECRET`. Leave `RESEND_API_KEY` unset so mail stays on the console. Live events are rejected even if a similarly named variable is present in the environment.
 3. Point a test webhook at `POST /api/webhooks/stripe` (`stripe listen` or a test endpoint). Subscribe at least `invoice.payment_failed` and `invoice.paid`.
 4. Connect the test account (OAuth or the manual test `acct_` id). The account id on the event must match that integration.
 5. Fail a test renewal, call `POST /api/jobs/run` with the Bearer secret, and read the internal `/pay/update/...` URL from `MessageDelivery`, not from logs.
-6. Pay the hosted invoice with a Stripe test card. Confirm the invoice is `PAID`, the case is `RECOVERED`, and another cron run does not send.
+6. Pay the hosted invoice with a Stripe test card. Confirm the invoice is `PAID` and the case is `RECOVERED`. A later cron does not start a new email for actions that are still pending. A send already handed to the provider can still complete once.
 
 Automated tests mock Stripe and Resend. A green CI run is not a sandbox payment.
 

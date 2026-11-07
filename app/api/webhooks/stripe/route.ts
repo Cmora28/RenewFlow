@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 
-import { isStripeLivemodeAllowed } from "@/lib/providers/stripe/livemode";
 import {
   ingestStripeWebhookEvent,
   StripeLivemodeRejectedError,
@@ -34,7 +33,7 @@ export async function POST(req: Request) {
     throw error;
   }
 
-  if (stripeEvent.livemode === true && !isStripeLivemodeAllowed()) {
+  if (stripeEvent.livemode === true) {
     return NextResponse.json(
       { error: "Live mode Stripe events are rejected" },
       { status: 400 },

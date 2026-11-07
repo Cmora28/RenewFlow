@@ -10,7 +10,6 @@ process.env.CRON_SECRET ??= "ci-cron-secret";
 process.env.NEXTAUTH_SECRET ??= "ci-nextauth-secret";
 process.env.NEXTAUTH_URL ??= "http://localhost:3000";
 process.env.APP_URL ??= "http://localhost:3000";
-process.env.STRIPE_ALLOW_LIVEMODE = "false";
 delete process.env.RESEND_API_KEY;
 
 export default defineConfig({
