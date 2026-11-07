@@ -4,58 +4,44 @@ import type Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
 
 /**
- * Resolve the workspace Stripe integration for an inbound webhook event.
+ * Resolve the workspace Stripe integration for an inbound webhook.
  *
- * Resolution order:
- * 1. Stripe Connect `event.account` → `PaymentProviderIntegration.providerAccountId`
- * 2. `workspaceId` metadata on the event object (if present)
- * 3. Single active Stripe integration (non-Connect / single-tenant setups)
+ * The connected account on `event.account` is required. Metadata and
+ * "the only active integration" are not routing keys. If metadata carries
+ * `workspaceId`, it must match the integration found for that account;
+ * a mismatch is rejected instead of being attributed to either side.
  */
 export async function resolveStripeIntegrationForEvent(
   event: Stripe.Event,
 ): Promise<PaymentProviderIntegration | null> {
-  if (event.account) {
-    const byAccount = await prisma.paymentProviderIntegration.findFirst({
-      where: {
-        provider: "STRIPE",
-        providerAccountId: event.account,
-        status: { in: ["ACTIVE", "PENDING"] },
-      },
-      orderBy: { updatedAt: "desc" },
-    });
-    if (byAccount) {
-      return byAccount;
-    }
+  if (!event.account) {
+    return null;
   }
 
-  const metadataWorkspaceId = extractWorkspaceIdFromEventObject(event);
-  if (metadataWorkspaceId) {
-    const byWorkspace = await prisma.paymentProviderIntegration.findFirst({
-      where: {
-        workspaceId: metadataWorkspaceId,
-        provider: "STRIPE",
-        status: { in: ["ACTIVE", "PENDING"] },
-      },
-      orderBy: { updatedAt: "desc" },
-    });
-    if (byWorkspace) {
-      return byWorkspace;
-    }
-  }
-
-  const activeStripeIntegrations = await prisma.paymentProviderIntegration.findMany({
+  const matches = await prisma.paymentProviderIntegration.findMany({
     where: {
       provider: "STRIPE",
-      status: "ACTIVE",
+      providerAccountId: event.account,
+      status: { in: ["ACTIVE", "PENDING"] },
     },
     take: 2,
   });
 
-  if (activeStripeIntegrations.length === 1) {
-    return activeStripeIntegrations[0] ?? null;
+  if (matches.length !== 1) {
+    return null;
   }
 
-  return null;
+  const integration = matches[0];
+  if (!integration) {
+    return null;
+  }
+
+  const metadataWorkspaceId = extractWorkspaceIdFromEventObject(event);
+  if (metadataWorkspaceId && metadataWorkspaceId !== integration.workspaceId) {
+    return null;
+  }
+
+  return integration;
 }
 
 function extractWorkspaceIdFromEventObject(event: Stripe.Event): string | null {

@@ -71,9 +71,6 @@ export async function signUpUser(input: SignUpInput): Promise<SignUpResult> {
       data: {
         name: workspaceName,
         slug,
-        settings: {
-          recoverySequence: { emailCount: 3, spanDays: 10 },
-        },
       },
     });
 
