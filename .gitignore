@@ -29,6 +29,9 @@ yarn-error.log*
 .env
 .env*.local
 
+# isolated local Postgres and smoke logs
+/.local/
+
 # prisma
 /app/generated/prisma
 

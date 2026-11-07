@@ -12,7 +12,13 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
-    "db:push": "prisma db push"
+    "db:push": "prisma db push",
+    "local:setup": "node scripts/local-setup.mjs",
+    "local:check": "node scripts/local-check.mjs",
+    "local:db": "node scripts/local-postgres.mjs up",
+    "local:db:down": "node scripts/local-postgres.mjs down",
+    "local:migrate": "node scripts/local-migrate.mjs",
+    "local:smoke": "node scripts/local-smoke.mjs"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.9.0",

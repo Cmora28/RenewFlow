@@ -1,0 +1,24 @@
+# Isolated local Postgres for RenewFlow.
+# Bind address and host port stay on loopback:54329 so this does not attach to
+# another Postgres on 5432. The application container is intentionally absent:
+# run `npm run dev` or `npm run local:smoke` on the host.
+#
+# This file was not executed where it was added (Docker was not installed).
+# `npm run local:db` is the verified path on a machine with Postgres 16 binaries.
+
+name: renewflow-local
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: renewflow_local
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the local env file}
+      POSTGRES_DB: renewflow_local
+    ports:
+      - "127.0.0.1:54329:5432"
+    volumes:
+      - renewflow_local_pg:/var/lib/postgresql/data
+
+volumes:
+  renewflow_local_pg:
