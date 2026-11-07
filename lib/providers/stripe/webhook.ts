@@ -1,4 +1,5 @@
 import type { ProviderEvent } from "@prisma/client";
+import { randomBytes } from "crypto";
 import type Stripe from "stripe";
 
 import {
@@ -212,6 +213,17 @@ function isUniqueConstraintError(error: unknown): boolean {
   );
 }
 
+let afterProviderClaimForTests:
+  | ((info: { id: string; lockToken: string }) => Promise<void>)
+  | undefined;
+
+/** Test-only. Runs after a claim and before provider side effects. */
+export function setAfterProviderClaimForTests(
+  hook: ((info: { id: string; lockToken: string }) => Promise<void>) | undefined,
+): void {
+  afterProviderClaimForTests = hook;
+}
+
 export type ProviderEventDrainResult = {
   scanned: number;
   processed: number;
@@ -302,6 +314,7 @@ export async function processStripeProviderEvent(
     return "skipped";
   }
 
+  const lockToken = randomBytes(16).toString("hex");
   const claimed = await prisma.providerEvent.updateMany({
     where: {
       id: providerEventId,
@@ -320,6 +333,7 @@ export async function processStripeProviderEvent(
     data: {
       deliveryStatus: "PROCESSING",
       lockedAt: new Date(),
+      lockToken,
       attemptCount: { increment: 1 },
       errorMessage: null,
     },
@@ -342,32 +356,47 @@ export async function processStripeProviderEvent(
     return closed.count > 0 ? "failed" : "skipped";
   }
 
+  if (afterProviderClaimForTests) {
+    await afterProviderClaimForTests({ id: providerEventId, lockToken });
+  }
+  const owned = await prisma.providerEvent.findUnique({
+    where: { id: providerEventId },
+    select: { lockToken: true },
+  });
+  if (owned?.lockToken !== lockToken) {
+    return "skipped";
+  }
+
   try {
     await handleStripeEvent(existing.workspaceId, {
       ...existing,
       deliveryStatus: "PROCESSING",
     });
 
-    await prisma.providerEvent.update({
-      where: { id: providerEventId },
+    const written = await prisma.providerEvent.updateMany({
+      where: { id: providerEventId, lockToken },
       data: {
         deliveryStatus: "PROCESSED",
         processedAt: new Date(),
         errorMessage: null,
+        lockToken: null,
       },
     });
-    return "processed";
+    return written.count > 0 ? "processed" : "skipped";
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const current = await prisma.providerEvent.findUnique({
       where: { id: providerEventId },
-      select: { attemptCount: true },
+      select: { attemptCount: true, lockToken: true },
     });
+    if (current?.lockToken !== lockToken) {
+      return "skipped";
+    }
     const exhausted =
       (current?.attemptCount ?? MAX_PROVIDER_EVENT_ATTEMPTS) >=
       MAX_PROVIDER_EVENT_ATTEMPTS;
-    await prisma.providerEvent.update({
-      where: { id: providerEventId },
+    await prisma.providerEvent.updateMany({
+      where: { id: providerEventId, lockToken },
       data: {
         deliveryStatus: "FAILED",
         errorMessage: (exhausted ? `max_attempts_reached: ${message}` : message).slice(
@@ -375,6 +404,7 @@ export async function processStripeProviderEvent(
           2000,
         ),
         lockedAt: null,
+        lockToken: null,
       },
     });
     return "failed";

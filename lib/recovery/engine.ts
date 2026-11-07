@@ -14,7 +14,10 @@ import {
 } from "@/lib/jobs/limits";
 import { prisma } from "@/lib/prisma";
 
+import type { InvoiceTx } from "@/lib/providers/stripe/invoice-lock";
+
 import { getEmailService } from "./email";
+import { EmailSendError } from "./email/errors";
 import { invoiceBlocksDunning, isTerminalRecoveryCase } from "./status";
 import {
   buildTemplateVars,
@@ -43,11 +46,12 @@ const DEFAULT_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 export async function createRecoveryCase(
   paymentFailure: PaymentFailureRef,
   options: CreateRecoveryCaseOptions = {},
+  db: typeof prisma | InvoiceTx = prisma,
 ): Promise<CreateRecoveryCaseResult> {
   const reuseExisting = options.reuseExisting ?? true;
 
   if (reuseExisting) {
-    const existing = await prisma.recoveryCase.findFirst({
+    const existing = await db.recoveryCase.findFirst({
       where: {
         workspaceId: paymentFailure.workspaceId,
         status: { in: ["OPEN", "IN_PROGRESS"] },
@@ -77,7 +81,7 @@ export async function createRecoveryCase(
     }
   }
 
-  const recoveryCase = await prisma.recoveryCase.create({
+  const recoveryCase = await db.recoveryCase.create({
     data: {
       workspaceId: paymentFailure.workspaceId,
       customerId: paymentFailure.customerId,
@@ -94,15 +98,18 @@ export async function createRecoveryCase(
     },
   });
 
-  const initialAction = await scheduleAction({
-    recoveryCaseId: recoveryCase.id,
-    type: "send_email",
-    scheduledFor: options.initialEmailAt ?? new Date(),
-    metadata: {
-      step: "initial_dunning",
-      templateName: DEFAULT_DUNNING_TEMPLATE_NAME,
+  const initialAction = await scheduleAction(
+    {
+      recoveryCaseId: recoveryCase.id,
+      type: "send_email",
+      scheduledFor: options.initialEmailAt ?? new Date(),
+      metadata: {
+        step: "initial_dunning",
+        templateName: DEFAULT_DUNNING_TEMPLATE_NAME,
+      },
     },
-  });
+    db,
+  );
 
   return {
     recoveryCase,
@@ -117,12 +124,13 @@ export async function createRecoveryCase(
  */
 export async function scheduleAction(
   input: ScheduleActionInput,
+  db: typeof prisma | InvoiceTx = prisma,
 ): Promise<RecoveryAction> {
   const type = resolveActionType(input.type);
   const scheduledAt = input.scheduledFor;
   const dueNow = scheduledAt.getTime() <= Date.now() + 1000;
 
-  return prisma.recoveryAction.create({
+  return db.recoveryAction.create({
     data: {
       recoveryCaseId: input.recoveryCaseId,
       type,
@@ -153,8 +161,13 @@ export function setBeforeProviderSendForTests(
  *   call the provider again (`ambiguous_delivery_not_retried`). The same
  *   stop happens if the process dies after QUEUED and before the call, so
  *   a message can be missing rather than duplicated.
- * - The idempotency key `recovery_action_<id>` is passed to the provider.
- *   That is not an exactly-once guarantee in this process.
+ * - The idempotency key `recovery_action_<id>` is stable for an action. The
+ *   payment-update token is created once and reused. This is not exactly-once.
+ * - A timeout, network error, or unknown provider result does not call the
+ *   provider again. A permanent rejection is not retried either.
+ * - A crash before the provider handoff may retry that same token.
+ * - Completion writes require the claim's lockToken. A worker that lost the
+ *   lease cannot overwrite the current owner or start a new send.
  * - A case that becomes terminal during the provider request itself can
  *   still be delivered once. Link access and card updates never mark paid.
  */
@@ -164,14 +177,13 @@ export async function executeAction(
 ): Promise<ExecuteActionResult> {
   const leaseMs = options.leaseMs ?? PROCESSING_LEASE_MS;
   const staleBefore = new Date(Date.now() - leaseMs);
+  const lockToken = randomBytes(16).toString("hex");
   const claimed = await prisma.recoveryAction.updateMany({
     where: {
       id: actionId,
+      attemptCount: { lt: MAX_RECOVERY_ACTION_ATTEMPTS },
       OR: [
-        {
-          status: { in: ["PENDING", "SCHEDULED", "FAILED"] },
-          attemptCount: { lt: MAX_RECOVERY_ACTION_ATTEMPTS },
-        },
+        { status: { in: ["PENDING", "SCHEDULED"] } },
         {
           status: "IN_PROGRESS",
           OR: [{ lockedAt: null }, { lockedAt: { lt: staleBefore } }],
@@ -181,10 +193,13 @@ export async function executeAction(
     data: {
       status: "IN_PROGRESS",
       lockedAt: new Date(),
+      lockToken,
     },
   });
 
   if (claimed.count === 0) {
+    const exhausted = await closeExhaustedAction(actionId, staleBefore);
+    if (exhausted) return exhausted;
     return {
       actionId,
       status: "SKIPPED",
@@ -215,14 +230,10 @@ export async function executeAction(
     const reason = isTerminalRecoveryCase(recoveryCase.status)
       ? `Skipped: recovery case is ${recoveryCase.status}`
       : "Skipped: invoice is paid";
-    await prisma.recoveryAction.update({
-      where: { id: actionId },
-      data: {
-        status: "SKIPPED",
-        executedAt: new Date(),
-        lockedAt: null,
-        resultSummary: reason,
-      },
+    await finishOwnedAction(actionId, lockToken, {
+      status: "SKIPPED",
+      executedAt: new Date(),
+      resultSummary: reason,
     });
     return {
       actionId,
@@ -238,7 +249,7 @@ export async function executeAction(
       case "EMAIL":
       case "PAYMENT_UPDATE_LINK":
       case "DUNNING_STEP":
-        result = await executeEmailDunningAction(action.id, recoveryCase);
+        result = await executeEmailDunningAction(action.id, recoveryCase, lockToken);
         break;
       case "SMS":
         // TODO: implement SMS dunning via Twilio (or similar) EmailService-style adapter
@@ -247,13 +258,10 @@ export async function executeAction(
           status: "SKIPPED",
           resultSummary: `Action type ${action.type} is not implemented yet`,
         };
-        await prisma.recoveryAction.update({
-          where: { id: actionId },
-          data: {
-            status: "SKIPPED",
-            executedAt: new Date(),
-            resultSummary: result.resultSummary,
-          },
+        await finishOwnedAction(actionId, lockToken, {
+          status: "SKIPPED",
+          executedAt: new Date(),
+          resultSummary: result.resultSummary,
         });
         return result;
       case "RETRY_PAYMENT":
@@ -263,13 +271,10 @@ export async function executeAction(
           status: "SKIPPED",
           resultSummary: `Action type ${action.type} is not implemented yet`,
         };
-        await prisma.recoveryAction.update({
-          where: { id: actionId },
-          data: {
-            status: "SKIPPED",
-            executedAt: new Date(),
-            resultSummary: result.resultSummary,
-          },
+        await finishOwnedAction(actionId, lockToken, {
+          status: "SKIPPED",
+          executedAt: new Date(),
+          resultSummary: result.resultSummary,
         });
         return result;
       default:
@@ -278,31 +283,21 @@ export async function executeAction(
           status: "SKIPPED",
           resultSummary: `Action type ${action.type} is not implemented yet`,
         };
-        await prisma.recoveryAction.update({
-          where: { id: actionId },
-          data: {
-            status: "SKIPPED",
-            executedAt: new Date(),
-            resultSummary: result.resultSummary,
-          },
+        await finishOwnedAction(actionId, lockToken, {
+          status: "SKIPPED",
+          executedAt: new Date(),
+          resultSummary: result.resultSummary,
         });
         return result;
     }
 
-    await prisma.recoveryAction.update({
-      where: { id: actionId },
-      data: {
-        status: result.status,
-        executedAt: new Date(),
-        lockedAt: null,
-        resultSummary: result.resultSummary,
-        ...(result.status === "FAILED"
-          ? { scheduledAt: new Date(Date.now() - 1000) }
-          : {}),
-      },
+    const kept = await finishOwnedAction(actionId, lockToken, {
+      status: result.status,
+      executedAt: new Date(),
+      resultSummary: result.resultSummary,
     });
 
-    if (result.status === "SUCCEEDED") {
+    if (kept && result.status === "SUCCEEDED") {
       await prisma.recoveryCase.updateMany({
         where: { id: recoveryCase.id, status: "OPEN" },
         data: { status: "IN_PROGRESS" },
@@ -318,14 +313,10 @@ export async function executeAction(
     });
     if (delivery?.status === "SENT" || delivery?.providerMessageId) {
       const summary = "Recorded delivery; provider was not called again";
-      await prisma.recoveryAction.update({
-        where: { id: actionId },
-        data: {
-          status: "SUCCEEDED",
-          executedAt: new Date(),
-          lockedAt: null,
-          resultSummary: summary,
-        },
+      await finishOwnedAction(actionId, lockToken, {
+        status: "SUCCEEDED",
+        executedAt: new Date(),
+        resultSummary: summary,
       });
       await prisma.recoveryCase.updateMany({
         where: { id: recoveryCase.id, status: "OPEN" },
@@ -339,20 +330,20 @@ export async function executeAction(
       };
     }
 
-    await prisma.recoveryAction.update({
-      where: { id: actionId },
-      data: {
-        status: "FAILED",
-        executedAt: new Date(),
-        lockedAt: null,
-        scheduledAt: new Date(Date.now() - 1000),
-        resultSummary: message.slice(0, 1000),
-      },
+    const handedOff =
+      delivery?.status === "QUEUED" || delivery?.status === "FAILED";
+    await finishOwnedAction(actionId, lockToken, {
+      status: "FAILED",
+      executedAt: new Date(),
+      ...(handedOff ? { attemptCount: MAX_RECOVERY_ACTION_ATTEMPTS } : {}),
+      resultSummary: handedOff
+        ? AMBIGUOUS_DELIVERY_SUMMARY
+        : message.slice(0, 1000),
     });
     return {
       actionId,
       status: "FAILED",
-      resultSummary: message,
+      resultSummary: handedOff ? AMBIGUOUS_DELIVERY_SUMMARY : message,
     };
   }
 }
@@ -374,11 +365,20 @@ async function executeEmailDunningAction(
     paymentFailure: PaymentFailureRef | null;
     workspace: { id: string; name: string };
   },
+  lockToken: string,
 ): Promise<ExecuteActionResult> {
   const existingDelivery = await prisma.messageDelivery.findFirst({
     where: { recoveryActionId: actionId, channel: "EMAIL" },
     orderBy: { createdAt: "desc" },
   });
+
+  if (!(await ownsActionLock(actionId, lockToken))) {
+    return {
+      actionId,
+      status: "SKIPPED",
+      resultSummary: "Skipped: lost recovery action lease",
+    };
+  }
 
   if (existingDelivery?.status === "SENT" || existingDelivery?.providerMessageId) {
     return {
@@ -389,15 +389,18 @@ async function executeEmailDunningAction(
     };
   }
 
-  if (existingDelivery?.status === "QUEUED") {
-    await prisma.recoveryAction.update({
-      where: { id: actionId },
-      data: { attemptCount: MAX_RECOVERY_ACTION_ATTEMPTS },
+  if (existingDelivery?.status === "QUEUED" || existingDelivery?.status === "FAILED") {
+    await updateOwnedAction(actionId, lockToken, {
+      attemptCount: MAX_RECOVERY_ACTION_ATTEMPTS,
     });
     return {
       actionId,
       status: "FAILED",
-      resultSummary: AMBIGUOUS_DELIVERY_SUMMARY,
+      resultSummary:
+        existingDelivery.status === "FAILED" &&
+        existingDelivery.errorMessage === "permanent_delivery_rejected"
+          ? "permanent_delivery_rejected"
+          : AMBIGUOUS_DELIVERY_SUMMARY,
       messageDeliveryId: existingDelivery.id,
     };
   }
@@ -421,12 +424,12 @@ async function executeEmailDunningAction(
     throw new Error("Customer has no email address for dunning");
   }
 
-  const session = await createPaymentUpdateSession({
+  const paymentUpdateUrl = await reuseOrCreatePaymentUpdateUrl({
+    existingDelivery,
     workspaceId: recoveryCase.workspaceId,
     customerId: recoveryCase.customerId,
     recoveryCaseId: recoveryCase.id,
   });
-  const paymentUpdateUrl = buildPaymentUpdateUrl(session.token);
   const content = await renderDunningContent(
     recoveryCase,
     paymentFailure,
@@ -444,7 +447,6 @@ async function executeEmailDunningAction(
           body: content.body,
           toAddress: customer.email,
           metadata: {
-            paymentUpdateSessionId: session.id,
             paymentUpdateUrl,
           } satisfies Prisma.InputJsonObject,
         },
@@ -462,7 +464,6 @@ async function executeEmailDunningAction(
           subject: content.subject,
           body: content.body,
           metadata: {
-            paymentUpdateSessionId: session.id,
             paymentUpdateUrl,
           } satisfies Prisma.InputJsonObject,
         },
@@ -473,9 +474,8 @@ async function executeEmailDunningAction(
     data: { status: "QUEUED", errorMessage: null },
   });
   if (handedOff.count === 0) {
-    await prisma.recoveryAction.update({
-      where: { id: actionId },
-      data: { attemptCount: MAX_RECOVERY_ACTION_ATTEMPTS },
+    await updateOwnedAction(actionId, lockToken, {
+      attemptCount: MAX_RECOVERY_ACTION_ATTEMPTS,
     });
     return {
       actionId,
@@ -510,15 +510,28 @@ async function executeEmailDunningAction(
     };
   }
 
+  if (!(await ownsActionLock(actionId, lockToken))) {
+    return {
+      actionId,
+      status: "SKIPPED",
+      resultSummary: "Skipped: lost recovery action lease",
+      messageDeliveryId: delivery.id,
+    };
+  }
+
   const attempt = await prisma.recoveryAction.findUnique({
     where: { id: actionId },
-    select: { attemptCount: true },
+    select: { attemptCount: true, lockToken: true },
   });
+  if (attempt?.lockToken !== lockToken) {
+    return {
+      actionId,
+      status: "SKIPPED",
+      resultSummary: "Skipped: lost recovery action lease",
+      messageDeliveryId: delivery.id,
+    };
+  }
   if ((attempt?.attemptCount ?? 0) >= MAX_RECOVERY_ACTION_ATTEMPTS) {
-    await prisma.messageDelivery.update({
-      where: { id: delivery.id },
-      data: { status: "FAILED", errorMessage: "max_attempts_reached" },
-    });
     return {
       actionId,
       status: "FAILED",
@@ -527,10 +540,22 @@ async function executeEmailDunningAction(
     };
   }
 
-  await prisma.recoveryAction.update({
-    where: { id: actionId },
+  const incremented = await prisma.recoveryAction.updateMany({
+    where: {
+      id: actionId,
+      lockToken,
+      attemptCount: { lt: MAX_RECOVERY_ACTION_ATTEMPTS },
+    },
     data: { attemptCount: { increment: 1 } },
   });
+  if (incremented.count === 0) {
+    return {
+      actionId,
+      status: "SKIPPED",
+      resultSummary: "Skipped: lost recovery action lease",
+      messageDeliveryId: delivery.id,
+    };
+  }
 
   try {
     const emailService = getEmailService();
@@ -553,16 +578,10 @@ async function executeEmailDunningAction(
         providerMessageId: sent.providerMessageId,
         sentAt: new Date(),
         metadata: {
-          paymentUpdateSessionId: session.id,
           paymentUpdateUrl,
           emailProvider: sent.provider,
         } satisfies Prisma.InputJsonObject,
       },
-    });
-
-    await prisma.paymentUpdateSession.update({
-      where: { id: session.id },
-      data: { status: "OPEN" },
     });
 
     return {
@@ -570,18 +589,29 @@ async function executeEmailDunningAction(
       status: "SUCCEEDED",
       resultSummary: `Sent dunning email to ${customer.email}`,
       messageDeliveryId: delivery.id,
-      paymentUpdateSessionId: session.id,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    await prisma.messageDelivery.update({
-      where: { id: delivery.id },
-      data: {
-        status: "FAILED",
-        errorMessage: message.slice(0, 2000),
-      },
+    const permanent = error instanceof EmailSendError && error.disposition === "permanent";
+    if (permanent) {
+      await prisma.messageDelivery.update({
+        where: { id: delivery.id },
+        data: {
+          status: "FAILED",
+          errorMessage: "permanent_delivery_rejected",
+        },
+      });
+    }
+    await updateOwnedAction(actionId, lockToken, {
+      attemptCount: MAX_RECOVERY_ACTION_ATTEMPTS,
     });
-    throw error;
+    return {
+      actionId,
+      status: "FAILED",
+      resultSummary: permanent
+        ? "permanent_delivery_rejected"
+        : AMBIGUOUS_DELIVERY_SUMMARY,
+      messageDeliveryId: delivery.id,
+    };
   }
 }
 
@@ -650,8 +680,99 @@ async function createPaymentUpdateSession(args: {
 export function buildPaymentUpdateUrl(token: string): string {
   const base = (process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000")
     .replace(/\/$/, "");
-  // TODO: implement public /pay/update/[token] page that collects a new payment method
   return `${base}/pay/update/${token}`;
+}
+
+async function updateOwnedAction(
+  actionId: string,
+  lockToken: string,
+  data: Prisma.RecoveryActionUpdateManyMutationInput,
+): Promise<boolean> {
+  const updated = await prisma.recoveryAction.updateMany({
+    where: { id: actionId, lockToken },
+    data,
+  });
+  return updated.count > 0;
+}
+
+async function finishOwnedAction(
+  actionId: string,
+  lockToken: string,
+  data: Prisma.RecoveryActionUpdateManyMutationInput,
+): Promise<boolean> {
+  return updateOwnedAction(actionId, lockToken, {
+    ...data,
+    lockToken: null,
+    lockedAt: null,
+  });
+}
+
+async function ownsActionLock(actionId: string, lockToken: string): Promise<boolean> {
+  const row = await prisma.recoveryAction.findUnique({
+    where: { id: actionId },
+    select: { lockToken: true },
+  });
+  return row?.lockToken === lockToken;
+}
+
+async function closeExhaustedAction(
+  actionId: string,
+  staleBefore: Date,
+): Promise<ExecuteActionResult | null> {
+  const delivery = await prisma.messageDelivery.findFirst({
+    where: { recoveryActionId: actionId, channel: "EMAIL" },
+    orderBy: { createdAt: "desc" },
+  });
+  const recorded = delivery?.status === "SENT" || Boolean(delivery?.providerMessageId);
+  const closed = await prisma.recoveryAction.updateMany({
+    where: {
+      id: actionId,
+      status: "IN_PROGRESS",
+      attemptCount: { gte: MAX_RECOVERY_ACTION_ATTEMPTS },
+      OR: [{ lockedAt: null }, { lockedAt: { lt: staleBefore } }],
+    },
+    data: {
+      status: recorded ? "SUCCEEDED" : "FAILED",
+      executedAt: new Date(),
+      lockedAt: null,
+      lockToken: null,
+      resultSummary: recorded
+        ? "Recorded delivery; provider was not called again"
+        : "max_attempts_reached",
+    },
+  });
+  if (closed.count === 0) return null;
+  return {
+    actionId,
+    status: recorded ? "SUCCEEDED" : "FAILED",
+    resultSummary: recorded
+      ? "Recorded delivery; provider was not called again"
+      : "max_attempts_reached",
+  };
+}
+
+function paymentUpdateUrlFromMetadata(metadata: Prisma.JsonValue | null): string | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const url = (metadata as Record<string, unknown>).paymentUpdateUrl;
+  return typeof url === "string" && url.length > 0 ? url : null;
+}
+
+async function reuseOrCreatePaymentUpdateUrl(args: {
+  existingDelivery: { metadata: Prisma.JsonValue } | null;
+  workspaceId: string;
+  customerId: string;
+  recoveryCaseId: string;
+}): Promise<string> {
+  const existingUrl = args.existingDelivery
+    ? paymentUpdateUrlFromMetadata(args.existingDelivery.metadata)
+    : null;
+  if (existingUrl) return existingUrl;
+  const session = await createPaymentUpdateSession({
+    workspaceId: args.workspaceId,
+    customerId: args.customerId,
+    recoveryCaseId: args.recoveryCaseId,
+  });
+  return buildPaymentUpdateUrl(session.token);
 }
 
 function resolveActionType(type: RecoveryActionAlias): RecoveryActionType {

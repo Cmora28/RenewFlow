@@ -9,7 +9,9 @@ import {
   drainStripeProviderEvents,
   ingestStripeWebhookEvent,
   processStripeProviderEvent,
+  setAfterProviderClaimForTests,
 } from "@/lib/providers/stripe/webhook";
+import { EmailSendError } from "@/lib/recovery/email";
 import { resendRecoveryEmail } from "@/lib/actions/recovery";
 import {
   setEmailServiceForTests,
@@ -39,11 +41,15 @@ vi.mock("@/lib/workspace", async () => {
 class RecordingEmail implements EmailService {
   readonly sent: SendEmailInput[] = [];
   failTimes = 0;
+  permanent = false;
 
   async send(input: SendEmailInput) {
+    if (this.permanent) {
+      throw new EmailSendError("rejected", "permanent");
+    }
     if (this.failTimes > 0) {
       this.failTimes -= 1;
-      throw new Error("provider rejected");
+      throw new Error("timeout talking to provider");
     }
     this.sent.push(input);
     return {
@@ -624,18 +630,187 @@ describe("jobs, claims, and delivery", () => {
     expect((await prisma.messageDelivery.findFirstOrThrow()).status).toBe("CANCELED");
   });
 
-  it("retries a provider failure and then stops sending for a terminal case", async () => {
+  it("does not resend after a timeout that may have been accepted", async () => {
     const graph = await seedWorkspace();
     await openFailure(graph);
     email.failTimes = 1;
     await runDueRecoveryActions();
     expect(email.sent).toHaveLength(0);
-    expect((await prisma.recoveryAction.findFirstOrThrow()).status).toBe("FAILED");
+    const action = await prisma.recoveryAction.findFirstOrThrow();
+    expect(action.status).toBe("FAILED");
+    expect(action.resultSummary).toBe(AMBIGUOUS_DELIVERY_SUMMARY);
+    expect((await prisma.messageDelivery.findFirstOrThrow()).status).toBe("QUEUED");
+
+    await runDueRecoveryActions();
+    expect(email.sent).toHaveLength(0);
+  });
+
+  it("does not retry a permanent provider rejection", async () => {
+    const graph = await seedWorkspace();
+    await openFailure(graph);
+    email.permanent = true;
+    await runDueRecoveryActions();
+    expect(email.sent).toHaveLength(0);
+    expect((await prisma.recoveryAction.findFirstOrThrow()).resultSummary).toBe(
+      "permanent_delivery_rejected",
+    );
     expect((await prisma.messageDelivery.findFirstOrThrow()).status).toBe("FAILED");
+    email.permanent = false;
+    await runDueRecoveryActions();
+    expect(email.sent).toHaveLength(0);
+  });
+
+  it("retries a pre-handoff crash with the same token and does not mint another", async () => {
+    const graph = await seedWorkspace();
+    await openFailure(graph);
+    const action = await prisma.recoveryAction.findFirstOrThrow();
+    const token = "tok_stable_retry_value";
+    await prisma.recoveryAction.update({
+      where: { id: action.id },
+      data: {
+        status: "IN_PROGRESS",
+        lockedAt: new Date(Date.now() - 10 * 60 * 1000),
+        attemptCount: 0,
+      },
+    });
+    await prisma.messageDelivery.create({
+      data: {
+        workspaceId: graph.workspace.id,
+        customerId: graph.customer.id,
+        recoveryCaseId: action.recoveryCaseId,
+        recoveryActionId: action.id,
+        channel: "EMAIL",
+        status: "PENDING",
+        toAddress: graph.customer.email,
+        subject: "Action needed",
+        body: "old",
+        metadata: { paymentUpdateUrl: `http://localhost:3000/pay/update/${token}` },
+      },
+    });
 
     await runDueRecoveryActions();
     expect(email.sent).toHaveLength(1);
+    expect(email.sent[0]?.text).toContain(token);
+    expect(email.sent[0]?.idempotencyKey).toBe(`recovery_action_${action.id}`);
+    expect(await prisma.paymentUpdateSession.count()).toBe(0);
 
+    await runDueRecoveryActions();
+    expect(email.sent).toHaveLength(1);
+  });
+
+  it("does not resend an old FAILED delivery", async () => {
+    const graph = await seedWorkspace();
+    await openFailure(graph);
+    const action = await prisma.recoveryAction.findFirstOrThrow();
+    await prisma.recoveryAction.update({
+      where: { id: action.id },
+      data: {
+        status: "IN_PROGRESS",
+        lockedAt: new Date(Date.now() - 10 * 60 * 1000),
+        attemptCount: 1,
+      },
+    });
+    await prisma.messageDelivery.create({
+      data: {
+        workspaceId: graph.workspace.id,
+        customerId: graph.customer.id,
+        recoveryCaseId: action.recoveryCaseId,
+        recoveryActionId: action.id,
+        channel: "EMAIL",
+        status: "FAILED",
+        toAddress: graph.customer.email,
+        errorMessage: "socket hang up",
+        metadata: { paymentUpdateUrl: "http://localhost:3000/pay/update/tok_old" },
+      },
+    });
+
+    await runDueRecoveryActions();
+    expect(email.sent).toHaveLength(0);
+    expect((await prisma.recoveryAction.findUniqueOrThrow({ where: { id: action.id } })).status).toBe(
+      "FAILED",
+    );
+    expect(await prisma.paymentUpdateSession.count()).toBe(0);
+  });
+
+  it("does not let a stale worker overwrite the lease winner or send", async () => {
+    const graph = await seedWorkspace();
+    await openFailure(graph);
+    const action = await prisma.recoveryAction.findFirstOrThrow();
+    setBeforeProviderSendForTests(async () => {
+      await prisma.recoveryAction.update({
+        where: { id: action.id },
+        data: {
+          lockToken: "winner",
+          status: "SUCCEEDED",
+          resultSummary: "winner finished",
+          lockedAt: new Date(),
+        },
+      });
+    });
+
+    await runDueRecoveryActions();
+    expect(email.sent).toHaveLength(0);
+    const stored = await prisma.recoveryAction.findUniqueOrThrow({ where: { id: action.id } });
+    expect(stored.status).toBe("SUCCEEDED");
+    expect(stored.resultSummary).toBe("winner finished");
+    expect(stored.lockToken).toBe("winner");
+  });
+
+  it("does not let a stale provider worker overwrite the claim or open a case", async () => {
+    const graph = await seedWorkspace();
+    const event = invoiceEvent({
+      type: "invoice.payment_failed",
+      account: graph.accountId,
+      customer: graph.customer.providerCustomerId,
+      status: "open",
+      amountRemaining: 2000,
+    });
+    const ingested = await ingestStripeWebhookEvent(event);
+    setAfterProviderClaimForTests(async ({ id }) => {
+      await prisma.providerEvent.update({
+        where: { id },
+        data: {
+          lockToken: "winner",
+          deliveryStatus: "PROCESSED",
+          errorMessage: "winner",
+        },
+      });
+    });
+
+    const outcome = await processStripeProviderEvent(ingested.providerEventId);
+    expect(outcome).toBe("skipped");
+    expect(await prisma.recoveryCase.count()).toBe(0);
+    const stored = await prisma.providerEvent.findUniqueOrThrow({
+      where: { id: ingested.providerEventId },
+    });
+    expect(stored.deliveryStatus).toBe("PROCESSED");
+    expect(stored.errorMessage).toBe("winner");
+    expect(stored.lockToken).toBe("winner");
+  });
+
+  it("closes a stale in-progress action that has used its attempts without sending", async () => {
+    const graph = await seedWorkspace();
+    await openFailure(graph);
+    const action = await prisma.recoveryAction.findFirstOrThrow();
+    await prisma.recoveryAction.update({
+      where: { id: action.id },
+      data: {
+        status: "IN_PROGRESS",
+        attemptCount: 3,
+        lockedAt: new Date(Date.now() - 10 * 60 * 1000),
+      },
+    });
+
+    await runDueRecoveryActions();
+    expect(email.sent).toHaveLength(0);
+    const stored = await prisma.recoveryAction.findUniqueOrThrow({ where: { id: action.id } });
+    expect(stored.status).toBe("FAILED");
+    expect(stored.resultSummary).toBe("max_attempts_reached");
+  });
+
+  it("does not send a manual resend after the case is recovered", async () => {
+    const graph = await seedWorkspace();
+    await openFailure(graph);
     await prisma.recoveryCase.updateMany({ data: { status: "RECOVERED" } });
     vi.mocked(getCurrentWorkspace).mockResolvedValue({
       id: graph.workspace.id,
@@ -648,8 +823,7 @@ describe("jobs, claims, and delivery", () => {
       ok: false,
       error: "Recovery case is closed; email was not sent",
     });
-    expect(email.sent).toHaveLength(1);
-    expect(await prisma.messageDelivery.count({ where: { status: "SENT" } })).toBe(1);
+    expect(email.sent).toHaveLength(0);
   });
 
   it("still allows one manual resend while the case is open", async () => {

@@ -1,5 +1,6 @@
 import { Resend } from "resend";
 
+import { classifyEmailFailure, EmailSendError } from "./errors";
 import type { EmailService, SendEmailInput, SendEmailResult } from "./types";
 
 /**
@@ -34,7 +35,13 @@ export class ResendEmailService implements EmailService {
     });
 
     if (error || !data?.id) {
-      throw new Error(error?.message ?? "Resend send failed without message id");
+      throw new EmailSendError(
+        error?.message ?? "Resend send failed without message id",
+        classifyEmailFailure({
+          statusCode: error?.statusCode,
+          name: error?.name,
+        }),
+      );
     }
 
     return {

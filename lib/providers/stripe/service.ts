@@ -8,6 +8,11 @@ import type {
 import type Stripe from "stripe";
 
 import { prisma } from "@/lib/prisma";
+import {
+  notifyInvoiceUpsertForTests,
+  withInvoiceMutation,
+  type InvoiceTx,
+} from "@/lib/providers/stripe/invoice-lock";
 import { isStripeInvoiceFullyPaid } from "@/lib/providers/stripe/paid-state";
 import { createRecoveryCase } from "@/lib/recovery";
 
@@ -323,61 +328,75 @@ export class StripeProviderService implements PaymentProviderService {
       getInvoiceSubscriptionId(stripeInvoice),
     );
 
-    const invoice = await this.upsertInvoice(
-      this.normalizeInvoice(
-        workspaceId,
-        customer.id,
-        localSubscriptionId,
-        stripeInvoice,
-      ),
-    );
-
-    if (isStripeInvoiceFullyPaid(stripeInvoice)) {
-      await this.markInvoiceRecovered({
-        workspaceId,
-        invoiceId: invoice.id,
-        amountPaid: stripeAmountToDecimal(stripeInvoice.amount_paid ?? 0),
-      });
-      return {
-        handled: true,
-        action: "marked_failure_and_recovery_recovered",
-        recordId: invoice.id,
-      };
+    if (!stripeInvoice.id) {
+      return { handled: false, action: "missing_invoice_refs" };
     }
 
-    if (eventType === "invoice.payment_failed") {
-      const current = await prisma.invoice.findUnique({
-        where: { id: invoice.id },
-        select: { status: true },
-      });
-      if (current?.status === "PAID") {
+    return withInvoiceMutation(workspaceId, stripeInvoice.id, async (tx) => {
+      const invoice = await this.upsertInvoice(
+        this.normalizeInvoice(
+          workspaceId,
+          customer.id,
+          localSubscriptionId,
+          stripeInvoice,
+        ),
+        tx,
+      );
+      await notifyInvoiceUpsertForTests();
+
+      if (isStripeInvoiceFullyPaid(stripeInvoice)) {
+        await this.markInvoiceRecovered(
+          {
+            workspaceId,
+            invoiceId: invoice.id,
+            amountPaid: stripeAmountToDecimal(stripeInvoice.amount_paid ?? 0),
+          },
+          tx,
+        );
         return {
           handled: true,
-          action: "ignored_stale_failure_after_paid",
+          action: "marked_failure_and_recovery_recovered",
           recordId: invoice.id,
         };
       }
 
-      const failure = await this.createPaymentFailureAndRecoveryCase({
-        workspaceId,
-        customerId: customer.id,
-        subscriptionId: localSubscriptionId,
-        invoiceId: invoice.id,
-        providerEventId,
-        stripeInvoice,
-      });
+      if (eventType === "invoice.payment_failed") {
+        const current = await tx.invoice.findUnique({
+          where: { id: invoice.id },
+          select: { status: true },
+        });
+        if (current?.status === "PAID") {
+          return {
+            handled: true,
+            action: "ignored_stale_failure_after_paid",
+            recordId: invoice.id,
+          };
+        }
+
+        const failure = await this.createPaymentFailureAndRecoveryCase(
+          {
+            workspaceId,
+            customerId: customer.id,
+            subscriptionId: localSubscriptionId,
+            invoiceId: invoice.id,
+            providerEventId,
+            stripeInvoice,
+          },
+          tx,
+        );
+        return {
+          handled: true,
+          action: "created_payment_failure_and_recovery_case",
+          recordId: failure.recoveryCaseId,
+        };
+      }
+
       return {
         handled: true,
-        action: "created_payment_failure_and_recovery_case",
-        recordId: failure.recoveryCaseId,
+        action: "upserted_invoice",
+        recordId: invoice.id,
       };
-    }
-
-    return {
-      handled: true,
-      action: "upserted_invoice",
-      recordId: invoice.id,
-    };
+    });
   }
 
   private async createPaymentFailureAndRecoveryCase(args: {
@@ -387,7 +406,9 @@ export class StripeProviderService implements PaymentProviderService {
     invoiceId: string;
     providerEventId?: string;
     stripeInvoice: Stripe.Invoice;
-  }): Promise<{ paymentFailureId: string; recoveryCaseId: string }> {
+  },
+    db: InvoiceTx,
+  ): Promise<{ paymentFailureId: string; recoveryCaseId: string }> {
     const {
       workspaceId,
       customerId,
@@ -397,7 +418,7 @@ export class StripeProviderService implements PaymentProviderService {
       stripeInvoice,
     } = args;
 
-    const existingOpenCase = await prisma.recoveryCase.findFirst({
+    const existingOpenCase = await db.recoveryCase.findFirst({
       where: {
         workspaceId,
         invoiceId,
@@ -423,7 +444,7 @@ export class StripeProviderService implements PaymentProviderService {
     const declineCode =
       stripeInvoice.last_finalization_error?.decline_code ?? null;
 
-    const paymentFailure = await prisma.paymentFailure.create({
+    const paymentFailure = await db.paymentFailure.create({
       data: {
         workspaceId,
         customerId,
@@ -445,12 +466,16 @@ export class StripeProviderService implements PaymentProviderService {
     });
 
     // Hand off to the provider-agnostic recovery engine (initial EMAIL action).
-    const { recoveryCase } = await createRecoveryCase(paymentFailure, {
-      metadata: {
-        source: "stripe.invoice.payment_failed",
-        stripeInvoiceId: stripeInvoice.id,
+    const { recoveryCase } = await createRecoveryCase(
+      paymentFailure,
+      {
+        metadata: {
+          source: "stripe.invoice.payment_failed",
+          stripeInvoiceId: stripeInvoice.id,
+        },
       },
-    });
+      db,
+    );
 
     return {
       paymentFailureId: paymentFailure.id,
@@ -458,15 +483,18 @@ export class StripeProviderService implements PaymentProviderService {
     };
   }
 
-  private async markInvoiceRecovered(args: {
-    workspaceId: string;
-    invoiceId: string;
-    amountPaid: string;
-  }): Promise<void> {
+  private async markInvoiceRecovered(
+    args: {
+      workspaceId: string;
+      invoiceId: string;
+      amountPaid: string;
+    },
+    db: InvoiceTx,
+  ): Promise<void> {
     const { workspaceId, invoiceId, amountPaid } = args;
     const now = new Date();
 
-    const openCases = await prisma.recoveryCase.findMany({
+    const openCases = await db.recoveryCase.findMany({
       where: {
         workspaceId,
         invoiceId,
@@ -476,9 +504,10 @@ export class StripeProviderService implements PaymentProviderService {
     });
 
     if (openCases.length > 0) {
-      await prisma.recoveryAction.updateMany({
+      const caseIds = openCases.map((item) => item.id);
+      await db.recoveryAction.updateMany({
         where: {
-          recoveryCaseId: { in: openCases.map((item) => item.id) },
+          recoveryCaseId: { in: caseIds },
           status: { in: ["PENDING", "SCHEDULED"] },
         },
         data: {
@@ -487,9 +516,26 @@ export class StripeProviderService implements PaymentProviderService {
           resultSummary: "Canceled: invoice paid",
         },
       });
+      await db.messageDelivery.updateMany({
+        where: {
+          recoveryCaseId: { in: caseIds },
+          status: "PENDING",
+        },
+        data: {
+          status: "CANCELED",
+          errorMessage: "Canceled: invoice paid",
+        },
+      });
+      await db.paymentUpdateSession.updateMany({
+        where: {
+          recoveryCaseId: { in: caseIds },
+          status: { in: ["PENDING", "OPEN"] },
+        },
+        data: { status: "CANCELED" },
+      });
     }
 
-    await prisma.paymentFailure.updateMany({
+    await db.paymentFailure.updateMany({
       where: {
         workspaceId,
         invoiceId,
@@ -501,7 +547,7 @@ export class StripeProviderService implements PaymentProviderService {
       },
     });
 
-    await prisma.recoveryCase.updateMany({
+    await db.recoveryCase.updateMany({
       where: {
         workspaceId,
         invoiceId,
@@ -700,8 +746,9 @@ export class StripeProviderService implements PaymentProviderService {
 
   private async upsertInvoice(
     input: CanonicalInvoiceInput,
+    db: InvoiceTx | typeof prisma = prisma,
   ): Promise<{ id: string; outcome: "created" | "updated" | "unchanged" }> {
-    const existing = await prisma.invoice.findUnique({
+    const existing = await db.invoice.findUnique({
       where: {
         workspaceId_providerInvoiceId: {
           workspaceId: input.workspaceId,
@@ -715,7 +762,7 @@ export class StripeProviderService implements PaymentProviderService {
       return { id: existing.id, outcome: "unchanged" };
     }
 
-    const record = await prisma.invoice.upsert({
+    const record = await db.invoice.upsert({
       where: {
         workspaceId_providerInvoiceId: {
           workspaceId: input.workspaceId,

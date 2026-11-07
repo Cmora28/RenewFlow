@@ -3,6 +3,11 @@ import { afterEach, beforeEach } from "vitest";
 
 import { setBackgroundEnqueueForTests } from "@/lib/jobs/queue";
 import { prisma } from "@/lib/prisma";
+import {
+  setAfterInvoiceLockForTests,
+  setAfterInvoiceUpsertForTests,
+} from "@/lib/providers/stripe/invoice-lock";
+import { setAfterProviderClaimForTests } from "@/lib/providers/stripe/webhook";
 import { setStripeClientForTests } from "@/lib/stripe";
 import { ConsoleEmailService, setEmailServiceForTests } from "@/lib/recovery/email";
 import { setBeforeProviderSendForTests } from "@/lib/recovery/engine";
@@ -84,10 +89,14 @@ export async function resetDatabase(): Promise<void> {
 }
 
 beforeEach(async () => {
+  setStripeClientForTests(guarded);
   setBackgroundEnqueueForTests(() => {});
   setEmailServiceForTests(new ConsoleEmailService());
   setPaymentLinkLookupForTests(undefined);
   setBeforeProviderSendForTests(undefined);
+  setAfterInvoiceLockForTests(undefined);
+  setAfterInvoiceUpsertForTests(undefined);
+  setAfterProviderClaimForTests(undefined);
   await resetDatabase();
 });
 

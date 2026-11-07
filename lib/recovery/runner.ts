@@ -12,9 +12,10 @@ import type { RunDueActionsResult } from "./types";
  * Intended to be invoked by `/api/jobs/run` (external cron) or a worker.
  *
  * Due criteria:
- * - PENDING, SCHEDULED, or retryable FAILED, with scheduledAt null or <= now
- * - IN_PROGRESS whose lease has expired (crash recovery)
- * Attempts are capped. CANCELED, SKIPPED, and SUCCEEDED are not selected.
+ * - PENDING or SCHEDULED, due, under the attempt cap
+ * - IN_PROGRESS whose lease has expired
+ * FAILED is not selected: a provider exception is ambiguous or permanent and
+ * is not sent again. A crash before handoff leaves IN_PROGRESS or PENDING.
  */
 export async function runDueRecoveryActions(
   options: { limit?: number; leaseMs?: number } = {},
@@ -28,7 +29,7 @@ export async function runDueRecoveryActions(
     where: {
       OR: [
         {
-          status: { in: ["PENDING", "SCHEDULED", "FAILED"] },
+          status: { in: ["PENDING", "SCHEDULED"] },
           attemptCount: { lt: MAX_RECOVERY_ACTION_ATTEMPTS },
           OR: [{ scheduledAt: null }, { scheduledAt: { lte: now } }],
         },
