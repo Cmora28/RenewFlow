@@ -1,6 +1,11 @@
 import type { ProviderEvent } from "@prisma/client";
+import { randomBytes } from "crypto";
 import type Stripe from "stripe";
 
+import {
+  MAX_PROVIDER_EVENT_ATTEMPTS,
+  PROCESSING_LEASE_MS,
+} from "@/lib/jobs/limits";
 import { enqueueBackgroundJob } from "@/lib/jobs/queue";
 import { prisma } from "@/lib/prisma";
 import { getStripeWebhookSecret, stripe } from "@/lib/stripe";
@@ -19,6 +24,13 @@ export class StripeWebhookResolutionError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "StripeWebhookResolutionError";
+  }
+}
+
+export class StripeLivemodeRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StripeLivemodeRejectedError";
   }
 }
 
@@ -60,12 +72,16 @@ export type IngestStripeWebhookResult = {
 export async function ingestStripeWebhookEvent(
   stripeEvent: Stripe.Event,
 ): Promise<IngestStripeWebhookResult> {
+  if (stripeEvent.livemode === true) {
+    throw new StripeLivemodeRejectedError("Live mode Stripe events are rejected");
+  }
+
   const integration = await resolveStripeIntegrationForEvent(stripeEvent);
   if (!integration) {
     throw new StripeWebhookResolutionError(
-      "Unable to resolve workspace Stripe integration for event. " +
-        "Connect the Stripe account via PaymentProviderIntegration.providerAccountId " +
-        "or set metadata.workspaceId on Stripe objects.",
+      "Unable to resolve a unique connected Stripe account for this event. " +
+        "event.account must match one active integration, and metadata.workspaceId " +
+        "must match that integration when it is present.",
     );
   }
 
@@ -177,7 +193,9 @@ export async function ingestStripeWebhookEvent(
     });
   }
 
-  enqueueBackgroundJob(() => processStripeProviderEvent(providerEvent.id));
+  enqueueBackgroundJob(async () => {
+    await processStripeProviderEvent(providerEvent.id);
+  });
 
   return {
     providerEventId: providerEvent.id,
@@ -195,53 +213,201 @@ function isUniqueConstraintError(error: unknown): boolean {
   );
 }
 
+let afterProviderClaimForTests:
+  | ((info: { id: string; lockToken: string }) => Promise<void>)
+  | undefined;
+
+/** Test-only. Runs after a claim and before provider side effects. */
+export function setAfterProviderClaimForTests(
+  hook: ((info: { id: string; lockToken: string }) => Promise<void>) | undefined,
+): void {
+  afterProviderClaimForTests = hook;
+}
+
+export type ProviderEventDrainResult = {
+  scanned: number;
+  processed: number;
+  failed: number;
+  skipped: number;
+};
+
+/**
+ * Reclaim Stripe provider events left QUEUED, FAILED, or PROCESSING past the lease.
+ * This is the crash recovery for `setImmediate`. Attempts are capped.
+ */
+export async function drainStripeProviderEvents(
+  options: { limit?: number; leaseMs?: number } = {},
+): Promise<ProviderEventDrainResult> {
+  const limit = options.limit ?? 50;
+  const leaseMs = options.leaseMs ?? PROCESSING_LEASE_MS;
+  const staleBefore = new Date(Date.now() - leaseMs);
+
+  const candidates = await prisma.providerEvent.findMany({
+    where: {
+      provider: "STRIPE",
+      OR: [
+        {
+          deliveryStatus: { in: ["QUEUED", "RECEIVED", "FAILED"] },
+          attemptCount: { lt: MAX_PROVIDER_EVENT_ATTEMPTS },
+        },
+        {
+          deliveryStatus: "PROCESSING",
+          OR: [{ lockedAt: null }, { lockedAt: { lt: staleBefore } }],
+        },
+      ],
+    },
+    orderBy: [{ receivedAt: "asc" }, { createdAt: "asc" }],
+    take: limit,
+    select: { id: true },
+  });
+
+  const result: ProviderEventDrainResult = {
+    scanned: candidates.length,
+    processed: 0,
+    failed: 0,
+    skipped: 0,
+  };
+
+  for (const candidate of candidates) {
+    const outcome = await processStripeProviderEvent(candidate.id, { leaseMs });
+    if (outcome === "processed") result.processed += 1;
+    else if (outcome === "failed") result.failed += 1;
+    else result.skipped += 1;
+  }
+
+  return result;
+}
+
 /**
  * Claim a stored ProviderEvent and run {@link handleStripeEvent}.
- * Safe to retry: uses an atomic status transition as the idempotency claim.
+ * The claim is compare-and-set. A second worker observes `skipped`.
+ * Live-mode payloads are ignored with no recovery side effects.
+ * There is no environment switch that accepts them.
  */
 export async function processStripeProviderEvent(
   providerEventId: string,
-): Promise<void> {
+  options: { leaseMs?: number } = {},
+): Promise<"processed" | "skipped" | "failed"> {
+  const leaseMs = options.leaseMs ?? PROCESSING_LEASE_MS;
+  const staleBefore = new Date(Date.now() - leaseMs);
+
+  const existing = await prisma.providerEvent.findUnique({
+    where: { id: providerEventId },
+  });
+  if (!existing || existing.provider !== "STRIPE") {
+    return "skipped";
+  }
+
+  const parsed = existing.payloadJson as unknown as Stripe.Event;
+  if (parsed.livemode === true) {
+    await prisma.providerEvent.updateMany({
+      where: {
+        id: providerEventId,
+        deliveryStatus: { notIn: ["IGNORED", "PROCESSED"] },
+      },
+      data: {
+        deliveryStatus: "IGNORED",
+        errorMessage: "livemode_rejected",
+        processedAt: new Date(),
+      },
+    });
+    return "skipped";
+  }
+
+  const lockToken = randomBytes(16).toString("hex");
   const claimed = await prisma.providerEvent.updateMany({
     where: {
       id: providerEventId,
-      deliveryStatus: { in: ["QUEUED", "RECEIVED", "FAILED"] },
+      OR: [
+        {
+          deliveryStatus: { in: ["QUEUED", "RECEIVED", "FAILED"] },
+          attemptCount: { lt: MAX_PROVIDER_EVENT_ATTEMPTS },
+        },
+        {
+          deliveryStatus: "PROCESSING",
+          attemptCount: { lt: MAX_PROVIDER_EVENT_ATTEMPTS },
+          OR: [{ lockedAt: null }, { lockedAt: { lt: staleBefore } }],
+        },
+      ],
     },
     data: {
       deliveryStatus: "PROCESSING",
+      lockedAt: new Date(),
+      lockToken,
+      attemptCount: { increment: 1 },
       errorMessage: null,
     },
   });
 
   if (claimed.count === 0) {
-    return;
+    const closed = await prisma.providerEvent.updateMany({
+      where: {
+        id: providerEventId,
+        deliveryStatus: "PROCESSING",
+        attemptCount: { gte: MAX_PROVIDER_EVENT_ATTEMPTS },
+        OR: [{ lockedAt: null }, { lockedAt: { lt: staleBefore } }],
+      },
+      data: {
+        deliveryStatus: "FAILED",
+        errorMessage: "max_attempts_reached",
+        lockedAt: null,
+      },
+    });
+    return closed.count > 0 ? "failed" : "skipped";
   }
 
-  const providerEvent = await prisma.providerEvent.findUniqueOrThrow({
+  if (afterProviderClaimForTests) {
+    await afterProviderClaimForTests({ id: providerEventId, lockToken });
+  }
+  const owned = await prisma.providerEvent.findUnique({
     where: { id: providerEventId },
+    select: { lockToken: true },
   });
+  if (owned?.lockToken !== lockToken) {
+    return "skipped";
+  }
 
   try {
-    await handleStripeEvent(providerEvent.workspaceId, providerEvent);
+    await handleStripeEvent(existing.workspaceId, {
+      ...existing,
+      deliveryStatus: "PROCESSING",
+    });
 
-    await prisma.providerEvent.update({
-      where: { id: providerEvent.id },
+    const written = await prisma.providerEvent.updateMany({
+      where: { id: providerEventId, lockToken },
       data: {
         deliveryStatus: "PROCESSED",
         processedAt: new Date(),
         errorMessage: null,
+        lockToken: null,
       },
     });
+    return written.count > 0 ? "processed" : "skipped";
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await prisma.providerEvent.update({
-      where: { id: providerEvent.id },
+    const current = await prisma.providerEvent.findUnique({
+      where: { id: providerEventId },
+      select: { attemptCount: true, lockToken: true },
+    });
+    if (current?.lockToken !== lockToken) {
+      return "skipped";
+    }
+    const exhausted =
+      (current?.attemptCount ?? MAX_PROVIDER_EVENT_ATTEMPTS) >=
+      MAX_PROVIDER_EVENT_ATTEMPTS;
+    await prisma.providerEvent.updateMany({
+      where: { id: providerEventId, lockToken },
       data: {
         deliveryStatus: "FAILED",
-        errorMessage: message.slice(0, 2000),
+        errorMessage: (exhausted ? `max_attempts_reached: ${message}` : message).slice(
+          0,
+          2000,
+        ),
+        lockedAt: null,
+        lockToken: null,
       },
     });
-    throw error;
+    return "failed";
   }
 }
 

@@ -4,11 +4,33 @@ const globalForStripe = globalThis as unknown as {
   stripe: Stripe | undefined;
 };
 
+let stripeClientOverride: Stripe | undefined;
+
+/** Test-only replacement. Production leaves this unset. */
+export function setStripeClientForTests(client: Stripe | undefined): void {
+  stripeClientOverride = client;
+}
+
+/** Test-only. Drops the cached client so the next getStripe() reads env again. */
+export function resetStripeClientForTests(): void {
+  stripeClientOverride = undefined;
+  globalForStripe.stripe = undefined;
+}
+
+/** Reject live and unknown key prefixes before the Stripe client is constructed. */
+export function assertStripeTestSecret(secretKey: string): void {
+  if (secretKey.startsWith("sk_test_") || secretKey.startsWith("rk_test_")) {
+    return;
+  }
+  throw new Error("STRIPE_SECRET_KEY must be a Stripe test key (sk_test_ or rk_test_)");
+}
+
 function createStripeClient(): Stripe {
   const secretKey = process.env.STRIPE_SECRET_KEY;
   if (!secretKey) {
     throw new Error("STRIPE_SECRET_KEY is not set");
   }
+  assertStripeTestSecret(secretKey);
 
   return new Stripe(secretKey, {
     typescript: true,
@@ -20,6 +42,9 @@ function createStripeClient(): Stripe {
  * Lazily initialized so importing this module during build does not require env.
  */
 export function getStripe(): Stripe {
+  if (stripeClientOverride) {
+    return stripeClientOverride;
+  }
   if (!globalForStripe.stripe) {
     globalForStripe.stripe = createStripeClient();
   }

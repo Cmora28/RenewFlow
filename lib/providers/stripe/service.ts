@@ -8,6 +8,12 @@ import type {
 import type Stripe from "stripe";
 
 import { prisma } from "@/lib/prisma";
+import {
+  notifyInvoiceUpsertForTests,
+  withInvoiceMutation,
+  type InvoiceTx,
+} from "@/lib/providers/stripe/invoice-lock";
+import { isStripeInvoiceFullyPaid } from "@/lib/providers/stripe/paid-state";
 import { createRecoveryCase } from "@/lib/recovery";
 
 import type {
@@ -158,7 +164,8 @@ export class StripeProviderService implements PaymentProviderService {
         const outcome = await this.upsertInvoice(input);
         result.synced += 1;
         if (outcome.outcome === "created") result.created += 1;
-        else result.updated += 1;
+        else if (outcome.outcome === "updated") result.updated += 1;
+        else result.skipped += 1;
       } catch (error) {
         result.errors.push({
           providerObjectId: stripeInvoice.id ?? "unknown",
@@ -321,52 +328,75 @@ export class StripeProviderService implements PaymentProviderService {
       getInvoiceSubscriptionId(stripeInvoice),
     );
 
-    const invoice = await this.upsertInvoice(
-      this.normalizeInvoice(
-        workspaceId,
-        customer.id,
-        localSubscriptionId,
-        stripeInvoice,
-      ),
-    );
-
-    if (eventType === "invoice.payment_failed") {
-      const failure = await this.createPaymentFailureAndRecoveryCase({
-        workspaceId,
-        customerId: customer.id,
-        subscriptionId: localSubscriptionId,
-        invoiceId: invoice.id,
-        providerEventId,
-        stripeInvoice,
-      });
-      return {
-        handled: true,
-        action: "created_payment_failure_and_recovery_case",
-        recordId: failure.recoveryCaseId,
-      };
+    if (!stripeInvoice.id) {
+      return { handled: false, action: "missing_invoice_refs" };
     }
 
-    if (
-      eventType === "invoice.paid" ||
-      eventType === "invoice.payment_succeeded"
-    ) {
-      await this.markInvoiceRecovered({
-        workspaceId,
-        invoiceId: invoice.id,
-        amountPaid: stripeAmountToDecimal(stripeInvoice.amount_paid ?? 0),
-      });
+    return withInvoiceMutation(workspaceId, stripeInvoice.id, async (tx) => {
+      const invoice = await this.upsertInvoice(
+        this.normalizeInvoice(
+          workspaceId,
+          customer.id,
+          localSubscriptionId,
+          stripeInvoice,
+        ),
+        tx,
+      );
+      await notifyInvoiceUpsertForTests();
+
+      if (isStripeInvoiceFullyPaid(stripeInvoice)) {
+        await this.markInvoiceRecovered(
+          {
+            workspaceId,
+            invoiceId: invoice.id,
+            amountPaid: stripeAmountToDecimal(stripeInvoice.amount_paid ?? 0),
+          },
+          tx,
+        );
+        return {
+          handled: true,
+          action: "marked_failure_and_recovery_recovered",
+          recordId: invoice.id,
+        };
+      }
+
+      if (eventType === "invoice.payment_failed") {
+        const current = await tx.invoice.findUnique({
+          where: { id: invoice.id },
+          select: { status: true },
+        });
+        if (current?.status === "PAID") {
+          return {
+            handled: true,
+            action: "ignored_stale_failure_after_paid",
+            recordId: invoice.id,
+          };
+        }
+
+        const failure = await this.createPaymentFailureAndRecoveryCase(
+          {
+            workspaceId,
+            customerId: customer.id,
+            subscriptionId: localSubscriptionId,
+            invoiceId: invoice.id,
+            providerEventId,
+            stripeInvoice,
+          },
+          tx,
+        );
+        return {
+          handled: true,
+          action: "created_payment_failure_and_recovery_case",
+          recordId: failure.recoveryCaseId,
+        };
+      }
+
       return {
         handled: true,
-        action: "marked_failure_and_recovery_recovered",
+        action: "upserted_invoice",
         recordId: invoice.id,
       };
-    }
-
-    return {
-      handled: true,
-      action: "upserted_invoice",
-      recordId: invoice.id,
-    };
+    });
   }
 
   private async createPaymentFailureAndRecoveryCase(args: {
@@ -376,7 +406,9 @@ export class StripeProviderService implements PaymentProviderService {
     invoiceId: string;
     providerEventId?: string;
     stripeInvoice: Stripe.Invoice;
-  }): Promise<{ paymentFailureId: string; recoveryCaseId: string }> {
+  },
+    db: InvoiceTx,
+  ): Promise<{ paymentFailureId: string; recoveryCaseId: string }> {
     const {
       workspaceId,
       customerId,
@@ -386,7 +418,7 @@ export class StripeProviderService implements PaymentProviderService {
       stripeInvoice,
     } = args;
 
-    const existingOpenCase = await prisma.recoveryCase.findFirst({
+    const existingOpenCase = await db.recoveryCase.findFirst({
       where: {
         workspaceId,
         invoiceId,
@@ -412,7 +444,7 @@ export class StripeProviderService implements PaymentProviderService {
     const declineCode =
       stripeInvoice.last_finalization_error?.decline_code ?? null;
 
-    const paymentFailure = await prisma.paymentFailure.create({
+    const paymentFailure = await db.paymentFailure.create({
       data: {
         workspaceId,
         customerId,
@@ -434,12 +466,16 @@ export class StripeProviderService implements PaymentProviderService {
     });
 
     // Hand off to the provider-agnostic recovery engine (initial EMAIL action).
-    const { recoveryCase } = await createRecoveryCase(paymentFailure, {
-      metadata: {
-        source: "stripe.invoice.payment_failed",
-        stripeInvoiceId: stripeInvoice.id,
+    const { recoveryCase } = await createRecoveryCase(
+      paymentFailure,
+      {
+        metadata: {
+          source: "stripe.invoice.payment_failed",
+          stripeInvoiceId: stripeInvoice.id,
+        },
       },
-    });
+      db,
+    );
 
     return {
       paymentFailureId: paymentFailure.id,
@@ -447,15 +483,59 @@ export class StripeProviderService implements PaymentProviderService {
     };
   }
 
-  private async markInvoiceRecovered(args: {
-    workspaceId: string;
-    invoiceId: string;
-    amountPaid: string;
-  }): Promise<void> {
+  private async markInvoiceRecovered(
+    args: {
+      workspaceId: string;
+      invoiceId: string;
+      amountPaid: string;
+    },
+    db: InvoiceTx,
+  ): Promise<void> {
     const { workspaceId, invoiceId, amountPaid } = args;
     const now = new Date();
 
-    await prisma.paymentFailure.updateMany({
+    const openCases = await db.recoveryCase.findMany({
+      where: {
+        workspaceId,
+        invoiceId,
+        status: { in: ["OPEN", "IN_PROGRESS"] },
+      },
+      select: { id: true },
+    });
+
+    if (openCases.length > 0) {
+      const caseIds = openCases.map((item) => item.id);
+      await db.recoveryAction.updateMany({
+        where: {
+          recoveryCaseId: { in: caseIds },
+          status: { in: ["PENDING", "SCHEDULED"] },
+        },
+        data: {
+          status: "CANCELED",
+          executedAt: now,
+          resultSummary: "Canceled: invoice paid",
+        },
+      });
+      await db.messageDelivery.updateMany({
+        where: {
+          recoveryCaseId: { in: caseIds },
+          status: "PENDING",
+        },
+        data: {
+          status: "CANCELED",
+          errorMessage: "Canceled: invoice paid",
+        },
+      });
+      await db.paymentUpdateSession.updateMany({
+        where: {
+          recoveryCaseId: { in: caseIds },
+          status: { in: ["PENDING", "OPEN"] },
+        },
+        data: { status: "CANCELED" },
+      });
+    }
+
+    await db.paymentFailure.updateMany({
       where: {
         workspaceId,
         invoiceId,
@@ -467,7 +547,7 @@ export class StripeProviderService implements PaymentProviderService {
       },
     });
 
-    await prisma.recoveryCase.updateMany({
+    await db.recoveryCase.updateMany({
       where: {
         workspaceId,
         invoiceId,
@@ -666,18 +746,23 @@ export class StripeProviderService implements PaymentProviderService {
 
   private async upsertInvoice(
     input: CanonicalInvoiceInput,
-  ): Promise<{ id: string; outcome: "created" | "updated" }> {
-    const existing = await prisma.invoice.findUnique({
+    db: InvoiceTx | typeof prisma = prisma,
+  ): Promise<{ id: string; outcome: "created" | "updated" | "unchanged" }> {
+    const existing = await db.invoice.findUnique({
       where: {
         workspaceId_providerInvoiceId: {
           workspaceId: input.workspaceId,
           providerInvoiceId: input.providerInvoiceId,
         },
       },
-      select: { id: true },
+      select: { id: true, status: true },
     });
 
-    const record = await prisma.invoice.upsert({
+    if (existing?.status === "PAID" && input.status !== "PAID") {
+      return { id: existing.id, outcome: "unchanged" };
+    }
+
+    const record = await db.invoice.upsert({
       where: {
         workspaceId_providerInvoiceId: {
           workspaceId: input.workspaceId,
@@ -837,23 +922,31 @@ export async function handleStripeEvent(
   workspaceId: string,
   event: Stripe.Event | ProviderEvent,
 ): Promise<HandleEventResult> {
-  const integration = await prisma.paymentProviderIntegration.findFirst({
+  const stripeEvent = isProviderEvent(event)
+    ? parseStripeEventPayload(event)
+    : event;
+  if (!stripeEvent.account) {
+    throw new Error("Stripe event is missing connected account");
+  }
+
+  const integrations = await prisma.paymentProviderIntegration.findMany({
     where: {
       workspaceId,
       provider: "STRIPE",
+      providerAccountId: stripeEvent.account,
       status: { in: ["ACTIVE", "PENDING"] },
     },
-    orderBy: { updatedAt: "desc" },
+    take: 2,
   });
 
-  if (!integration) {
+  if (integrations.length !== 1 || !integrations[0]) {
     throw new Error(
-      `No Stripe PaymentProviderIntegration found for workspace ${workspaceId}`,
+      `No unique Stripe integration for connected account in workspace ${workspaceId}`,
     );
   }
 
   const { stripe } = await import("@/lib/stripe");
-  const service = new StripeProviderService(stripe, integration);
+  const service = new StripeProviderService(stripe, integrations[0]);
 
   if (isProviderEvent(event)) {
     return service.handleEvent(workspaceId, event);

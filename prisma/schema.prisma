@@ -380,6 +380,12 @@ model RecoveryAction {
   recoveryCaseId String
   type           RecoveryActionType
   status         RecoveryActionStatus @default(PENDING)
+  /// Provider send attempts. Retries stop at the application cap.
+  attemptCount   Int                  @default(0)
+  /// Set while status is IN_PROGRESS. A stale lock can be reclaimed.
+  lockedAt       DateTime?
+  /// Owner of the current claim. Completion writes must match this token.
+  lockToken      String?
   scheduledAt    DateTime?
   executedAt     DateTime?
   resultSummary  String?
@@ -485,6 +491,12 @@ model ProviderEvent {
   eventType      String
   payloadJson    Json
   deliveryStatus ProviderEventDeliveryStatus @default(RECEIVED)
+  /// Processing attempts. Retries stop at the application cap.
+  attemptCount   Int                         @default(0)
+  /// Set while status is PROCESSING. A stale lock can be reclaimed.
+  lockedAt       DateTime?
+  /// Owner of the current claim. Completion writes must match this token.
+  lockToken      String?
   processedAt    DateTime?
   errorMessage   String?
   receivedAt     DateTime                    @default(now())

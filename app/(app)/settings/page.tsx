@@ -1,10 +1,7 @@
 import { Badge } from "@/components/ui/Badge";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { PageHeader } from "@/components/ui/PageHeader";
-import {
-  RecoverySequenceForm,
-  StripeConnectPanel,
-} from "@/components/settings/SettingsForms";
+import { StripeConnectPanel } from "@/components/settings/SettingsForms";
 import { prisma } from "@/lib/prisma";
 import { isStripeConnectConfigured } from "@/lib/providers/stripe/connect";
 import { getCurrentWorkspace, isWorkspaceOwner } from "@/lib/workspace";
@@ -31,11 +28,6 @@ export default async function SettingsPage({
     orderBy: { updatedAt: "desc" },
   });
 
-  const sequence = workspace.parsedSettings.recoverySequence ?? {
-    emailCount: 3,
-    spanDays: 10,
-  };
-
   const connectedVia =
     stripeIntegration?.metadata &&
     typeof stripeIntegration.metadata === "object" &&
@@ -50,7 +42,7 @@ export default async function SettingsPage({
     <div>
       <PageHeader
         title="Settings"
-        description="Connect providers and configure the default recovery sequence."
+        description="Connect providers. Recovery sends one immediate dunning email."
       />
 
       {params.stripe_connected ? (
@@ -117,29 +109,18 @@ export default async function SettingsPage({
 
         <Card>
           <CardHeader>
-            <h2 className="text-sm font-semibold">Default recovery sequence</h2>
+            <h2 className="text-sm font-semibold">Recovery email</h2>
             <p className="text-xs text-muted">
-              Used when scheduling dunning emails for new failures.
+              One email is sent when a payment failure opens a case.
             </p>
           </CardHeader>
           <CardBody>
-            {canManage ? (
-              <RecoverySequenceForm
-                emailCount={sequence.emailCount}
-                spanDays={sequence.spanDays}
-              />
-            ) : (
-              <div className="space-y-2 text-sm">
-                <ReadOnlyValue
-                  label="Emails"
-                  value={String(sequence.emailCount)}
-                />
-                <ReadOnlyValue
-                  label="Over days"
-                  value={String(sequence.spanDays)}
-                />
-              </div>
-            )}
+            <p className="text-sm text-foreground">
+              The current scope sends a single dunning email immediately. It
+              does not run a 3-email or 10-day sequence. Operators can resend
+              manually while the case is open. Recovered, closed, and abandoned
+              cases do not send again.
+            </p>
           </CardBody>
         </Card>
       </div>

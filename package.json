@@ -7,10 +7,18 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
-    "db:push": "prisma db push"
+    "db:push": "prisma db push",
+    "local:setup": "node scripts/local-setup.mjs",
+    "local:check": "node scripts/local-check.mjs",
+    "local:db": "node scripts/local-postgres.mjs up",
+    "local:db:down": "node scripts/local-postgres.mjs down",
+    "local:migrate": "node scripts/local-migrate.mjs",
+    "local:smoke": "node scripts/local-smoke.mjs"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.9.0",
@@ -37,6 +45,7 @@
     "eslint-config-next": "14.2.35",
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.4"
   }
 }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import {
   ingestStripeWebhookEvent,
+  StripeLivemodeRejectedError,
   StripeWebhookResolutionError,
   StripeWebhookVerificationError,
   verifyStripeWebhookEvent,
@@ -32,6 +33,13 @@ export async function POST(req: Request) {
     throw error;
   }
 
+  if (stripeEvent.livemode === true) {
+    return NextResponse.json(
+      { error: "Live mode Stripe events are rejected" },
+      { status: 400 },
+    );
+  }
+
   try {
     const result = await ingestStripeWebhookEvent(stripeEvent);
     return NextResponse.json(
@@ -45,6 +53,10 @@ export async function POST(req: Request) {
       { status: 200 },
     );
   } catch (error) {
+    if (error instanceof StripeLivemodeRejectedError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+
     if (error instanceof StripeWebhookResolutionError) {
       // Acknowledge receipt so Stripe does not retry endlessly for misconfig;
       // operators can inspect logs / ProviderEvent gaps.
