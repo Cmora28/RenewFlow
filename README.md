@@ -14,22 +14,32 @@ before customers disappear.
 - **Stripe** (first provider) + provider-agnostic domain model
 - **Resend** (email) when configured
 
-## Run locally
+## Local machine
+
+This is not a public deployment. The app listens on `http://127.0.0.1:3010` and Postgres listens on `127.0.0.1:54329`, database `renewflow_local`. Nothing here is reachable from the internet. `npm run dev` on port 3000 is still available after you point the same local env file at it, but the generated profile uses 3010 so it does not attach to another app.
 
 ```bash
-cp .env.example .env
-# Required: DATABASE_URL, NEXTAUTH_SECRET, NEXTAUTH_URL
-# Stripe:   STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
-# Required for cron: CRON_SECRET (Bearer header; required in every environment)
-# Optional: RESEND_API_KEY, EMAIL_FROM, APP_URL
-# Live-mode Stripe events are always rejected. There is no enablement variable.
-
 npm install
-npx prisma migrate dev
-npm run dev
+npm run local:setup    # writes .env.local; does not print secrets
+npm run local:db       # Postgres 16 binaries, data in .local/pgdata
+npm run local:migrate
+npm run local:check
+npm run dev -- --port 3010 --hostname 127.0.0.1
 ```
 
-App: http://localhost:3000 · Sign up at `/signup`
+`npm run local:smoke` runs that sequence, starts `next start` on 3010, checks `/login`, `/signup`, an unauthenticated `POST /api/jobs/run` (401), and `/pay/update/not-a-token`, then stops the app. It does not call Stripe or Resend.
+
+`.env.example` lists names and keeps values empty. `.env.local` is gitignored. The local checker refuses a non-loopback database, any port other than 54329, any database other than `renewflow_local`, a non-local `APP_URL`, `NODE_ENV=production` in that file, a live Stripe key, and `RESEND_API_KEY`. Leave the Stripe fields empty until a test key and a test webhook signing secret exist. Live webhook events are rejected by the app with no enablement variable.
+
+`docker-compose.local.yml` describes the same Postgres on `127.0.0.1:54329`. It was not executed in the environment that added it, because Docker was not installed. `npm run local:db` is the path that was run.
+
+`npm run local:db:down` stops only a data directory marked `RENEWFLOW_LOCAL`. It does not drop other databases.
+
+Sign up at `http://127.0.0.1:3010/signup`.
+
+## Public hosting
+
+Not configured. This repository has no Dockerfile for the app, no `vercel.json`, and no other host manifest. A public URL does not exist. Do not register a domain or deploy from this setup. A later sandbox still needs an explicit choice: stay on this machine and forward webhooks with the Stripe CLI to `POST /api/webhooks/stripe`, or pick a Node.js and Postgres host that is not in the repo yet. Neither path is authorized by the local profile.
 
 ### Stripe keys
 
