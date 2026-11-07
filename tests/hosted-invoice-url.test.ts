@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { isAllowedStripeHostedInvoiceUrl } from "@/lib/recovery/hosted-invoice-url";
-import { isStripeLivemodeAllowed } from "@/lib/providers/stripe/livemode";
 import { isStripeInvoiceFullyPaid } from "@/lib/providers/stripe/paid-state";
 
 describe("hosted invoice allowlist", () => {
@@ -29,28 +28,12 @@ describe("hosted invoice allowlist", () => {
   });
 });
 
-describe("paid predicate and livemode guard", () => {
+describe("paid predicate", () => {
   it("requires paid status and a zero remaining amount", () => {
     expect(isStripeInvoiceFullyPaid({ status: "paid", amount_remaining: 0 })).toBe(true);
     expect(isStripeInvoiceFullyPaid({ status: "open", amount_remaining: 0 })).toBe(false);
     expect(isStripeInvoiceFullyPaid({ status: "paid", amount_remaining: 50 })).toBe(false);
     expect(isStripeInvoiceFullyPaid({ status: "paid", amount_remaining: null })).toBe(false);
     expect(isStripeInvoiceFullyPaid({ status: "open", amount_remaining: 500 })).toBe(false);
-  });
-
-  it("allows livemode only for the exact string true", () => {
-    const previous = process.env.STRIPE_ALLOW_LIVEMODE;
-    try {
-      delete process.env.STRIPE_ALLOW_LIVEMODE;
-      expect(isStripeLivemodeAllowed()).toBe(false);
-      process.env.STRIPE_ALLOW_LIVEMODE = "false";
-      expect(isStripeLivemodeAllowed()).toBe(false);
-      process.env.STRIPE_ALLOW_LIVEMODE = "TRUE";
-      expect(isStripeLivemodeAllowed()).toBe(false);
-      process.env.STRIPE_ALLOW_LIVEMODE = "true";
-      expect(isStripeLivemodeAllowed()).toBe(true);
-    } finally {
-      process.env.STRIPE_ALLOW_LIVEMODE = previous ?? "false";
-    }
   });
 });

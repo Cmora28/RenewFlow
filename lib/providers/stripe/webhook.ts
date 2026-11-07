@@ -7,7 +7,6 @@ import {
 } from "@/lib/jobs/limits";
 import { enqueueBackgroundJob } from "@/lib/jobs/queue";
 import { prisma } from "@/lib/prisma";
-import { isStripeLivemodeAllowed } from "@/lib/providers/stripe/livemode";
 import { getStripeWebhookSecret, stripe } from "@/lib/stripe";
 
 import { handleStripeEvent } from "./service";
@@ -72,7 +71,7 @@ export type IngestStripeWebhookResult = {
 export async function ingestStripeWebhookEvent(
   stripeEvent: Stripe.Event,
 ): Promise<IngestStripeWebhookResult> {
-  if (stripeEvent.livemode === true && !isStripeLivemodeAllowed()) {
+  if (stripeEvent.livemode === true) {
     throw new StripeLivemodeRejectedError("Live mode Stripe events are rejected");
   }
 
@@ -270,8 +269,8 @@ export async function drainStripeProviderEvents(
 /**
  * Claim a stored ProviderEvent and run {@link handleStripeEvent}.
  * The claim is compare-and-set. A second worker observes `skipped`.
- * Live-mode payloads are ignored with no recovery side effects when the
- * sandbox guard is closed.
+ * Live-mode payloads are ignored with no recovery side effects.
+ * There is no environment switch that accepts them.
  */
 export async function processStripeProviderEvent(
   providerEventId: string,
@@ -288,7 +287,7 @@ export async function processStripeProviderEvent(
   }
 
   const parsed = existing.payloadJson as unknown as Stripe.Event;
-  if (parsed.livemode === true && !isStripeLivemodeAllowed()) {
+  if (parsed.livemode === true) {
     await prisma.providerEvent.updateMany({
       where: {
         id: providerEventId,
