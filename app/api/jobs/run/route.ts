@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { runDueRecoveryActions } from "@/lib/recovery";
+import { runJobsQuerySchema, zodErrorMessage } from "@/lib/validation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,18 +12,26 @@ export const dynamic = "force-dynamic";
  * Secure with `CRON_SECRET`:
  *   Authorization: Bearer <CRON_SECRET>
  *   or `?secret=<CRON_SECRET>`
- *
- * Example:
- *   curl -H "Authorization: Bearer $CRON_SECRET" \
- *     "https://app.example.com/api/jobs/run"
  */
 export async function POST(req: Request) {
   if (!authorize(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const limit = parseLimit(req);
-  const result = await runDueRecoveryActions({ limit });
+  const url = new URL(req.url);
+  const parsed = runJobsQuerySchema.safeParse({
+    limit: url.searchParams.get("limit") ?? undefined,
+    secret: url.searchParams.get("secret") ?? undefined,
+  });
+
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: zodErrorMessage(parsed.error) },
+      { status: 400 },
+    );
+  }
+
+  const result = await runDueRecoveryActions({ limit: parsed.data.limit });
 
   return NextResponse.json({
     ok: true,
@@ -50,13 +59,4 @@ function authorize(req: Request): boolean {
 
   const url = new URL(req.url);
   return url.searchParams.get("secret") === secret;
-}
-
-function parseLimit(req: Request): number {
-  const url = new URL(req.url);
-  const raw = url.searchParams.get("limit");
-  if (!raw) return 50;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 50;
-  return Math.min(parsed, 200);
 }

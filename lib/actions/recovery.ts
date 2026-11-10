@@ -4,12 +4,24 @@ import { revalidatePath } from "next/cache";
 
 import { prisma } from "@/lib/prisma";
 import { executeAction, scheduleAction } from "@/lib/recovery";
+import {
+  recoveryCaseIdSchema,
+  zodErrorMessage,
+} from "@/lib/validation";
 import { getCurrentWorkspace } from "@/lib/workspace";
 
 export async function resendRecoveryEmail(recoveryCaseId: string) {
+  const parsed = recoveryCaseIdSchema.safeParse({ recoveryCaseId });
+  if (!parsed.success) {
+    return { ok: false as const, error: zodErrorMessage(parsed.error) };
+  }
+
   const workspace = await getCurrentWorkspace();
   const recoveryCase = await prisma.recoveryCase.findFirst({
-    where: { id: recoveryCaseId, workspaceId: workspace.id },
+    where: {
+      id: parsed.data.recoveryCaseId,
+      workspaceId: workspace.id,
+    },
   });
 
   if (!recoveryCase) {
@@ -17,14 +29,14 @@ export async function resendRecoveryEmail(recoveryCaseId: string) {
   }
 
   const action = await scheduleAction({
-    recoveryCaseId,
+    recoveryCaseId: recoveryCase.id,
     type: "send_email",
     scheduledFor: new Date(),
     metadata: { source: "manual_resend" },
   });
 
   const result = await executeAction(action.id);
-  revalidatePath(`/recovery/${recoveryCaseId}`);
+  revalidatePath(`/recovery/${recoveryCase.id}`);
   revalidatePath("/recovery");
 
   return { ok: true as const, result };
