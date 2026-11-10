@@ -9,8 +9,12 @@
     "lint": "next lint",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
+    "db:seed": "node prisma/seed.mjs",
     "db:studio": "prisma studio",
     "db:push": "prisma db push"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.mjs"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.9.0",
