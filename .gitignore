@@ -18,16 +18,26 @@
 
 # misc
 .DS_Store
-*.pem
 
 # debug
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# local env files
+# local env files — commit .env.example only
 .env
-.env*.local
+.env.*
+!.env.example
+
+# keys, certificates, and credential dumps
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+credentials.json
+secrets.json
 
 # prisma
 /app/generated/prisma
