@@ -10,15 +10,20 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
+        ink: "var(--ink)",
+        teal: "var(--teal)",
+        paper: "var(--paper)",
         background: "var(--background)",
         foreground: "var(--foreground)",
         card: "var(--card)",
         muted: "var(--muted)",
         border: "var(--border)",
+        hairline: "var(--hairline)",
         accent: {
           DEFAULT: "var(--accent)",
           foreground: "var(--accent-foreground)",
           soft: "var(--accent-soft)",
+          muted: "var(--accent-muted)",
         },
         danger: "var(--danger)",
         warning: "var(--warning)",
@@ -27,10 +32,20 @@ const config: Config = {
           DEFAULT: "var(--sidebar)",
           foreground: "var(--sidebar-foreground)",
           muted: "var(--sidebar-muted)",
+          active: "var(--sidebar-active)",
         },
       },
+      fontFamily: {
+        display: ["var(--font-fraunces)", "Georgia", "serif"],
+        sans: ["var(--font-geist-sans)", "Segoe UI", "sans-serif"],
+        mono: ["var(--font-geist-mono)", "monospace"],
+      },
       boxShadow: {
-        panel: "0 1px 2px rgba(18, 32, 26, 0.06)",
+        panel: "0 1px 2px rgba(11, 31, 24, 0.04)",
+        lift: "0 4px 12px rgba(11, 31, 24, 0.06)",
+      },
+      transitionTimingFunction: {
+        out: "cubic-bezier(0.22, 1, 0.36, 1)",
       },
     },
   },

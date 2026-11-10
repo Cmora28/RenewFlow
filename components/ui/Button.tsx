@@ -14,12 +14,13 @@ type ButtonProps = PropsWithChildren<
 
 const variantClass: Record<Variant, string> = {
   primary:
-    "bg-accent text-accent-foreground hover:brightness-110 disabled:opacity-50",
+    "bg-accent text-accent-foreground hover:bg-teal/90 active:scale-[0.98] disabled:opacity-50",
   secondary:
-    "bg-white text-foreground border border-border hover:bg-accent-soft disabled:opacity-50",
-  ghost: "bg-transparent text-foreground hover:bg-accent-soft disabled:opacity-50",
+    "bg-card text-foreground border border-hairline hover:bg-accent-soft active:scale-[0.98] disabled:opacity-50",
+  ghost:
+    "bg-transparent text-foreground hover:bg-accent-soft active:scale-[0.98] disabled:opacity-50",
   danger:
-    "bg-danger text-white hover:brightness-110 disabled:opacity-50",
+    "bg-danger text-white hover:brightness-110 active:scale-[0.98] disabled:opacity-50",
 };
 
 const sizeClass: Record<Size, string> = {
@@ -39,7 +40,7 @@ export function Button({
     <button
       type={type}
       className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-md font-medium transition",
+        "inline-flex items-center justify-center gap-2 rounded-md font-medium transition-all duration-150 ease-out",
         variantClass[variant],
         sizeClass[size],
         className,

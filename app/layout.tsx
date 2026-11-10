@@ -1,8 +1,15 @@
 import type { Metadata } from "next";
+import { Fraunces } from "next/font/google";
 import localFont from "next/font/local";
 
 import { Providers } from "@/components/Providers";
 import "@/styles/globals.css";
+
+const fraunces = Fraunces({
+  subsets: ["latin"],
+  variable: "--font-fraunces",
+  display: "swap",
+});
 
 const geistSans = localFont({
   src: "./fonts/GeistVF.woff",
@@ -28,7 +35,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} min-h-screen antialiased`}
+        className={`${fraunces.variable} ${geistSans.variable} ${geistMono.variable} min-h-screen antialiased`}
       >
         <Providers>{children}</Providers>
       </body>

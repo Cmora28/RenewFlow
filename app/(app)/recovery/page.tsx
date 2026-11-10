@@ -1,4 +1,3 @@
-import { Card, CardBody } from "@/components/ui/Card";
 import { PageHeader } from "@/components/ui/PageHeader";
 import {
   RecoveryCasesTable,
@@ -63,16 +62,12 @@ export default async function RecoveryPage({
     <div>
       <PageHeader
         title="Recovery"
-        description="Track and act on failed renewals across providers."
+        description="Monitor and manage subscription recoveries in one inbox."
       />
-      <div className="mb-4">
-        <RecoveryFilters current={filter} />
+      <RecoveryFilters current={filter} />
+      <div className="mt-6 overflow-hidden rounded-lg border border-hairline bg-card shadow-panel">
+        <RecoveryCasesTable rows={rows} />
       </div>
-      <Card>
-        <CardBody className="p-0">
-          <RecoveryCasesTable rows={rows} />
-        </CardBody>
-      </Card>
     </div>
   );
 }
