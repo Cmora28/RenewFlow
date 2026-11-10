@@ -15,7 +15,9 @@
   "dependencies": {
     "@prisma/adapter-pg": "^7.9.0",
     "@prisma/client": "^7.9.0",
+    "bcryptjs": "^3.0.3",
     "next": "14.2.35",
+    "next-auth": "^4.24.15",
     "pg": "^8.22.0",
     "prisma": "^7.9.0",
     "react": "^18",
@@ -24,6 +26,7 @@
     "stripe": "^22.3.2"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20",
     "@types/pg": "^8.20.0",
     "@types/react": "^18",
