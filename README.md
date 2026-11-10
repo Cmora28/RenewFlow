@@ -29,6 +29,22 @@ Endpoint: `POST /api/webhooks/stripe`
 
 Point your Stripe webhook (or `stripe listen --forward-to localhost:3000/api/webhooks/stripe`) at this route.
 
+## Recovery engine
+
+Provider-agnostic dunning lives under `lib/recovery/`:
+
+- `createRecoveryCase(paymentFailure)` — opens a case + schedules initial email
+- `scheduleAction({ scheduledFor })` — queue follow-up actions
+- `executeAction(actionId)` — payment-update session + email + `MessageDelivery`
+- `POST /api/jobs/run` — cron entrypoint for due `RecoveryAction`s
+
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  "http://localhost:3000/api/jobs/run"
+```
+
+Email uses Resend when `RESEND_API_KEY` is set; otherwise a console adapter logs sends.
+
 ## Project structure
 
 ```
